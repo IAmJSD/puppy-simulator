@@ -86,6 +86,63 @@ export function jumpYip(): void {
   yip(audio().currentTime, 700)
 }
 
+/** Cat hiss: a sharp burst of high-passed noise. */
+export function hiss(): void {
+  const ac = audio()
+  const t = ac.currentTime
+  const dur = 0.35
+  const buffer = ac.createBuffer(1, Math.floor(ac.sampleRate * dur), ac.sampleRate)
+  const data = buffer.getChannelData(0)
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.min(1, (i / data.length) * 8) * (1 - i / data.length)
+  }
+  const src = ac.createBufferSource()
+  src.buffer = buffer
+  const hp = ac.createBiquadFilter()
+  hp.type = 'highpass'
+  hp.frequency.value = 3500
+  const gain = ac.createGain()
+  gain.gain.value = 0.14
+  src.connect(hp).connect(gain).connect(ac.destination)
+  src.start(t)
+}
+
+/** Mouse squeak: a tiny rising chirp. */
+export function squeak(): void {
+  const ac = audio()
+  const t = ac.currentTime
+  const osc = ac.createOscillator()
+  const gain = ac.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(1500, t)
+  osc.frequency.exponentialRampToValueAtTime(2300, t + 0.08)
+  osc.frequency.exponentialRampToValueAtTime(1700, t + 0.13)
+  gain.gain.setValueAtTime(0.0001, t)
+  gain.gain.exponentialRampToValueAtTime(0.08, t + 0.015)
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.15)
+  osc.connect(gain).connect(ac.destination)
+  osc.start(t)
+  osc.stop(t + 0.16)
+}
+
+/** Raccoon chitter: rapid little clicks. */
+export function chitter(): void {
+  const ac = audio()
+  for (let i = 0; i < 5; i++) {
+    const t = ac.currentTime + i * 0.05
+    const osc = ac.createOscillator()
+    const gain = ac.createGain()
+    osc.type = 'square'
+    osc.frequency.setValueAtTime(900 - i * 60, t)
+    gain.gain.setValueAtTime(0.0001, t)
+    gain.gain.exponentialRampToValueAtTime(0.05, t + 0.008)
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.04)
+    osc.connect(gain).connect(ac.destination)
+    osc.start(t)
+    osc.stop(t + 0.05)
+  }
+}
+
 /** Happy rising whine — the sound of a dog receiving pets. */
 export function happyWhine(): void {
   const ac = audio()

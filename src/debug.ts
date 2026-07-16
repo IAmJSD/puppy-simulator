@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import { createWorld } from './world'
 import { createCapybaras } from './capybara'
 import { createHumans } from './human'
+import { createCritters } from './critters'
 
 const q = new URLSearchParams(location.search)
 const n = (k: string, d: number): number => {
@@ -38,6 +39,11 @@ createHumans(scene, world, [
   [-34, 30, 5],
   [30, 40, 5],
   [-58, 90, 6],
+])
+createCritters(scene, world, [
+  ['cat', 12, 21, 8],
+  ['mouse', 6, 27, 4],
+  ['raccoon', -16.5, -12.5, 6],
 ])
 if (q.get('noglass') === '1') {
   scene.traverse((o) => {

@@ -11,8 +11,9 @@ import {
 import { Puppy, type ClimbInfo } from './puppy'
 import { initInput, consumeMouse, onFirstInput, isDown } from './input'
 import { award, tickScore, sleepPopup, heartPopup, showBanner } from './score'
-import { thud, glassBreak, sigh, splashSound, crunch, happyWhine } from './audio'
+import { thud, glassBreak, sigh, splashSound, crunch, happyWhine, hiss, squeak, chitter } from './audio'
 import { createHumans } from './human'
+import { createCritters } from './critters'
 import { WaterFX } from './water'
 import { createCapybaras, type Capybara } from './capybara'
 
@@ -81,6 +82,25 @@ const humans = createHumans(scene, world, [
   [-58, 90, 6], // pond capybara-watcher
 ])
 let shownPetBanner = false
+
+// Neighbourhood wildlife
+const critters = createCritters(scene, world, [
+  ['cat', 12, 21, 8],
+  ['cat', -42, 8, 8],
+  ['cat', 50, 66, 8],
+  ['cat', 5, -10, 8],
+  ['mouse', -15, -13, 4],
+  ['mouse', 3, -18, 4],
+  ['mouse', 6, 27, 4],
+  ['mouse', -38, 58, 4],
+  ['mouse', -62, 88, 4],
+  ['mouse', 30, 26, 4],
+  ['raccoon', -16.5, -12.5, 6],
+  ['raccoon', -78, 88, 6],
+  ['raccoon', 60, 74, 6],
+])
+const lootCooldowns = new Map<number, number>()
+const critterBanners = { cat: false, mouse: false, raccoon: false }
 
 // Fire hydrants erupt into geysers when knocked over
 const UP = new CANNON.Vec3(0, 1, 0)
@@ -262,6 +282,23 @@ function bark(origin: THREE.Vector3): void {
       bagBurstQueue.push(state)
     }
   }
+  // Barking scatters cats and mice, and shakes stolen kibble out of raccoons
+  critters.forEach((critter, i) => {
+    if (critter.body.position.vsub(o).length() > BARK_RADIUS) return
+    critter.scare()
+    if (critter.kind === 'raccoon' && (lootCooldowns.get(i) ?? 0) <= 0) {
+      lootCooldowns.set(i, 45)
+      const p = critter.body.position
+      for (let k = 0; k < 3; k++) spawnKibble(p.x, 0.5, p.z)
+      chitter()
+      const s = toScreen(p)
+      award(45, s.x, s.y, 'CAUGHT RED-HANDED')
+      if (!critterBanners.raccoon) {
+        critterBanners.raccoon = true
+        showBanner('TRASH PANDA JUSTICE')
+      }
+    }
+  })
   // Capybaras are physically and emotionally immune to barking
   capybaras.forEach((capy, i) => {
     if (capy.body.position.vsub(o).length() > BARK_RADIUS) return
@@ -757,6 +794,32 @@ function frame(now: number): void {
   for (const capy of capybaras) {
     capy.update(dt, puppy.body.position, capy === ridingCapy && puppy.snuggling)
   }
+  critters.forEach((critter, i) => {
+    const ev = critter.update(dt, puppy.body.position)
+    if (ev.fleeStarted && critter.kind === 'cat') hiss()
+    if (ev.touched) {
+      const s = toScreen(critter.body.position)
+      if (critter.kind === 'cat') {
+        award(35, s.x, s.y, 'CAT BOOP')
+        if (!critterBanners.cat) {
+          critterBanners.cat = true
+          showBanner('FELINE DIPLOMACY')
+        }
+      } else if (critter.kind === 'mouse') {
+        squeak()
+        award(25, s.x, s.y, 'MOUSE!')
+        if (!critterBanners.mouse) {
+          critterBanners.mouse = true
+          showBanner('MICE TO MEET YOU')
+        }
+      }
+    }
+    const loot = lootCooldowns.get(i)
+    if (loot !== undefined) {
+      if (loot > dt) lootCooldowns.set(i, loot - dt)
+      else lootCooldowns.delete(i)
+    }
+  })
   let beingPetted = false
   for (const human of humans) {
     const ev = human.update(dt, puppy.body.position)
