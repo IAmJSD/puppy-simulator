@@ -62,6 +62,7 @@ const capybaras = createCapybaras(scene, world, [
   [-69, 99, 7],
   [-76, 96, 7],
   [38.5, 31.5, 0], // pool enjoyer, not going anywhere
+  [62, 34, 3], // lazy river island resident
 ])
 for (const capy of capybaras) {
   snuggleSpots.push({ x: 0, y: 0, z: 0, r: 0.7, name: 'CAPYBARA', body: capy.body, dy: 0.68 })
@@ -536,12 +537,24 @@ function updateWater(dt: number): void {
   for (const z of waterZones) {
     const dx = p.x - z.x
     const dz = p.z - z.z
-    if (dx * dx + dz * dz <= z.r * z.r && p.y < 1.6) {
+    const d2 = dx * dx + dz * dz
+    const inner = z.innerR ?? 0
+    if (d2 <= z.r * z.r && d2 >= inner * inner && p.y < 1.6) {
       zone = z
       break
     }
   }
   puppy.inWater = zone !== null
+
+  // The lazy river has a current — drift with it
+  if (zone && zone.name === 'LAZY RIVER') {
+    const rx = p.x - zone.x
+    const rz = p.z - zone.z
+    const len = Math.hypot(rx, rz) || 1
+    const v = puppy.body.velocity
+    v.x += (-rz / len) * 2.8 * dt
+    v.z += (rx / len) * 2.8 * dt
+  }
 
   if (zone) {
     const speed = puppy.body.velocity.length()

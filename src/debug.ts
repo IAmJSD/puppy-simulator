@@ -28,6 +28,7 @@ createCapybaras(scene, world, [
   [-69, 99, 7],
   [-76, 96, 7],
   [38.5, 31.5, 0],
+  [62, 34, 3],
 ])
 createHumans(scene, world, [
   [0, 24, 5],

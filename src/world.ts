@@ -50,6 +50,7 @@ export interface WaterZone {
   x: number
   z: number
   r: number
+  innerR?: number // for ring-shaped water (lazy river)
   name: string
 }
 
@@ -297,6 +298,25 @@ export function createWorld(): GameWorld {
     const { mesh, body } = makeBench()
     add('BENCH', 30, mesh, body, x, 0.45, z, r)
   }
+  // Water-park resort props: deck chairs, extra toys for the new pools
+  for (const [x, z, r] of [
+    [32, 24.5, 0.4],
+    [67, 26.3, -0.9],
+    [63.5, 39.7, 2.3], // island lounging
+  ] as const) {
+    const chair = makeDeckChair()
+    add('DECK CHAIR', 25, chair.mesh, chair.body, x, 0.25, z, r)
+  }
+  {
+    const beach2 = makeBall()
+    beach2.body.material = bouncyMaterial
+    ;(beach2.mesh as THREE.Mesh & { material: THREE.MeshLambertMaterial }).material =
+      new THREE.MeshLambertMaterial({ color: 0xf2b134 })
+    add("BEACH BALL", 15, beach2.mesh, beach2.body, 68, 0.5, 22.5)
+    const duck2 = makeDuck()
+    add("RUBBER DUCK", 50, duck2.mesh, duck2.body, 53, 0.35, 37.5)
+  }
+
   // Yuzu oranges for the pool capybara — it's an onsen thing
   for (const [x, z] of [
     [37.8, 32.2],
@@ -1544,6 +1564,109 @@ function setupWaterPark(
       rate: 10,
     })
   }
+
+  // --- Lazy river: a ring of water with a current, around a palm island ---
+  const RC = { x: 62, z: 38, inner: 7.5, outer: 11.5 }
+  const riverBottom = new THREE.Mesh(new THREE.RingGeometry(RC.inner - 0.2, RC.outer + 0.3, 40), lambert(0x2e7cab))
+  riverBottom.rotation.x = -Math.PI / 2
+  riverBottom.position.set(RC.x, 0.03, RC.z)
+  scene.add(riverBottom)
+  const riverWater = new THREE.Mesh(new THREE.RingGeometry(RC.inner, RC.outer, 40), waterMat)
+  riverWater.rotation.x = -Math.PI / 2
+  riverWater.position.set(RC.x, 0.12, RC.z)
+  scene.add(riverWater)
+  zones.push({ x: RC.x, z: RC.z, r: RC.outer + 0.1, innerR: RC.inner, name: 'LAZY RIVER' })
+  // Outer wall ring
+  const rimMat = lambert(0xf0f0ea)
+  const rimSegments = 22
+  for (let i = 0; i < rimSegments; i++) {
+    const a = (i / rimSegments) * Math.PI * 2
+    const segLen = (2 * Math.PI * (RC.outer + 0.4)) / rimSegments + 0.05
+    const rim = new THREE.Mesh(new THREE.BoxGeometry(segLen, 0.45, 0.3), rimMat)
+    rim.position.set(RC.x + Math.cos(a) * (RC.outer + 0.4), 0.22, RC.z + Math.sin(a) * (RC.outer + 0.4))
+    rim.rotation.y = -a + Math.PI / 2
+    rim.castShadow = true
+    scene.add(rim)
+    staticBox(world, segLen, 0.45, 0.3, RC.x + Math.cos(a) * (RC.outer + 0.4), 0.22, RC.z + Math.sin(a) * (RC.outer + 0.4), -a + Math.PI / 2)
+  }
+  // Island: sandy beach ring, grassy middle, one palm tree
+  const beach = new THREE.Mesh(new THREE.CircleGeometry(RC.inner - 0.1, 28), lambert(0xe0c98f))
+  beach.rotation.x = -Math.PI / 2
+  beach.position.set(RC.x, 0.06, RC.z)
+  beach.receiveShadow = true
+  scene.add(beach)
+  const islandGrass = new THREE.Mesh(new THREE.CircleGeometry(5.2, 24), lambert(0x7bb85c))
+  islandGrass.rotation.x = -Math.PI / 2
+  islandGrass.position.set(RC.x, 0.07, RC.z)
+  scene.add(islandGrass)
+  const palm = new THREE.Group()
+  for (let i = 0; i < 4; i++) {
+    const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.16 - i * 0.02, 0.19 - i * 0.02, 1.0, 7), lambert(0x8a6a3d))
+    seg.position.set(i * 0.14, 0.5 + i * 0.95, 0)
+    seg.rotation.z = -0.12
+    seg.castShadow = true
+    palm.add(seg)
+  }
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2
+    const frond = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.05, 0.5), lambert(0x4e8c3a))
+    frond.position.set(0.55 + Math.cos(a) * 0.85, 4.15 - Math.abs(Math.sin(a * 0.5)) * 0.1, Math.sin(a) * 0.85)
+    frond.rotation.y = -a
+    frond.rotation.z = Math.cos(a) * -0.35 - 0.15
+    frond.castShadow = true
+    palm.add(frond)
+  }
+  palm.position.set(RC.x, 0, RC.z)
+  scene.add(palm)
+  const palmBody = new CANNON.Body({ mass: 0, shape: new CANNON.Cylinder(0.2, 0.2, 4, 7) })
+  palmBody.collisionFilterGroup = GROUP_NO_CAMERA
+  palmBody.position.set(RC.x + 0.2, 2, RC.z)
+  world.addBody(palmBody)
+
+  // --- Mega slide with its own plunge pool ---
+  buildSlide(scene, world, 52, 22, 5.5, 10, 0xf2789f)
+  const plungeDeck = new THREE.Mesh(new THREE.BoxGeometry(13, 0.05, 10), lambert(0xd8d2c5))
+  plungeDeck.position.set(66.5, 0.025, 22)
+  plungeDeck.receiveShadow = true
+  scene.add(plungeDeck)
+  const plungeBottom = new THREE.Mesh(new THREE.BoxGeometry(9, 0.05, 6), lambert(0x2e7cab))
+  plungeBottom.position.set(66.5, 0.05, 22)
+  scene.add(plungeBottom)
+  const plungeWater = new THREE.Mesh(new THREE.BoxGeometry(8.7, 0.04, 5.7), waterMat)
+  plungeWater.position.set(66.5, 0.3, 22)
+  scene.add(plungeWater)
+  const plungeWalls: Array<[number, number, number, number]> = [
+    [9.6, 0.3, 66.5, 18.85],
+    [9.6, 0.3, 66.5, 25.15],
+    [0.3, 6.0, 61.85, 22],
+    [0.3, 6.0, 71.15, 22],
+  ]
+  for (const [w, d, x, z] of plungeWalls) {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 0.5, d), rimMat)
+    wall.position.set(x, 0.25, z)
+    wall.castShadow = true
+    scene.add(wall)
+    staticBox(world, w, 0.5, d, x, 0.25, z)
+  }
+  zones.push({ x: 66.5, z: 22, r: 4.2, name: "PLUNGE POOL" })
+
+  // Parasols
+  for (const [ux, uz, uc] of [
+    [33, 24, 0xd7263d],
+    [70.5, 26.2, 0xf2b134],
+  ] as const) {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.2, 6), lambert(0xd9d9d9))
+    pole.position.set(ux, 1.1, uz)
+    scene.add(pole)
+    const canopy = new THREE.Mesh(new THREE.ConeGeometry(1.5, 0.55, 10), lambert(uc))
+    canopy.position.set(ux, 2.3, uz)
+    canopy.castShadow = true
+    scene.add(canopy)
+    const poleBody = new CANNON.Body({ mass: 0, shape: new CANNON.Cylinder(0.07, 0.07, 2.2, 6) })
+    poleBody.collisionFilterGroup = GROUP_NO_CAMERA
+    poleBody.position.set(ux, 1.1, uz)
+    world.addBody(poleBody)
+  }
 }
 
 type AddProp = (
@@ -2207,6 +2330,35 @@ function makeBench(): MeshBody {
     g.add(leg)
   }
   const body = new CANNON.Body({ mass: 8, shape: new CANNON.Box(new CANNON.Vec3(0.85, 0.45, 0.3)) })
+  return { mesh: g, body }
+}
+
+function makeDeckChair(): MeshBody {
+  const g = new THREE.Group()
+  const fabric = lambert(0x6db3d9)
+  const frame = lambert(0xf0f0ea)
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.07, 1.0), fabric)
+  seat.position.y = 0.05
+  g.add(seat)
+  const back = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.07, 0.65), fabric)
+  back.position.set(0, 0.28, -0.72)
+  back.rotation.x = -0.75
+  g.add(back)
+  for (const [lx, lz] of [
+    [-0.24, 0.4],
+    [0.24, 0.4],
+    [-0.24, -0.4],
+    [0.24, -0.4],
+  ] as const) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.24, 0.05), frame)
+    leg.position.set(lx, -0.1, lz)
+    g.add(leg)
+  }
+  g.traverse((o) => {
+    if (o instanceof THREE.Mesh) o.castShadow = true
+  })
+  const body = new CANNON.Body({ mass: 6 })
+  body.addShape(new CANNON.Box(new CANNON.Vec3(0.3, 0.3, 0.55)), new CANNON.Vec3(0, 0.1, 0))
   return { mesh: g, body }
 }
 
