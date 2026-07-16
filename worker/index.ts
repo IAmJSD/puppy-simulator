@@ -88,6 +88,9 @@ export class Lobby {
       } else if (msg.t === 'delta') {
         // Authoritative physics stream — host only
         if (ws === this.host) this.broadcast(ws, { t: 'delta', b: msg.b })
+      } else if (msg.t === 'npc') {
+        // Authoritative NPC stream — host only
+        if (ws === this.host) this.broadcast(ws, { t: 'npc', n: msg.n })
       } else if (msg.t === 'reqsnap') {
         if (this.host && this.host !== ws) {
           this.send(this.host, { t: 'reqsnap', from: info.id })

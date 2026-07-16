@@ -55,6 +55,11 @@ export class RemotePlayer {
     return this.target
   }
 
+  /** True when this remote puppy is snuggling (e.g. riding a capybara). */
+  get isSnuggling(): boolean {
+    return !!this.flags.s
+  }
+
   applyState(msg: StateMsg): void {
     const prev = this.target.clone()
     this.target.set(msg.p[0], msg.p[1], msg.p[2])
@@ -111,7 +116,7 @@ export class RemotePlayer {
   }
 }
 
-export type WorldEventKind = 'pane' | 'bag'
+export type WorldEventKind = 'pane' | 'bag' | 'scare'
 
 /** One synced body: [index, x, y, z, qx, qy, qz, qw, vx, vy, vz] */
 export type BodyEntry = number[]
@@ -129,6 +134,7 @@ export class Net {
   hostId = ''
   onBark: ((x: number, y: number, z: number) => void) | null = null
   onDelta: ((entries: BodyEntry[]) => void) | null = null
+  onNpc: ((entries: number[][]) => void) | null = null
   onEvent: ((kind: WorldEventKind, index: number) => void) | null = null
   onSnapshotRequest: ((from: string) => void) | null = null
   onSnapshot: ((snap: Snapshot) => void) | null = null
@@ -209,8 +215,12 @@ export class Net {
             this.onDelta(msg.b as BodyEntry[])
           }
         } else if (msg.t === 'ev') {
-          if (this.onEvent && (msg.k === 'pane' || msg.k === 'bag')) {
+          if (this.onEvent && (msg.k === 'pane' || msg.k === 'bag' || msg.k === 'scare')) {
             this.onEvent(msg.k, Number(msg.i))
+          }
+        } else if (msg.t === 'npc') {
+          if (!this.isHost && this.onNpc && Array.isArray(msg.n)) {
+            this.onNpc(msg.n as number[][])
           }
         } else if (msg.t === 'reqsnap') {
           if (this.isHost && this.onSnapshotRequest) this.onSnapshotRequest(String(msg.from))
@@ -261,6 +271,11 @@ export class Net {
   sendDelta(entries: BodyEntry[]): void {
     if (!this.connected || entries.length === 0) return
     this.ws!.send(JSON.stringify({ t: 'delta', b: entries }))
+  }
+
+  sendNpc(entries: number[][]): void {
+    if (!this.connected || entries.length === 0) return
+    this.ws!.send(JSON.stringify({ t: 'npc', n: entries }))
   }
 
   sendEvent(kind: WorldEventKind, index: number): void {

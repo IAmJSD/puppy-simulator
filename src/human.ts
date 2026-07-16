@@ -153,7 +153,6 @@ export class Human {
     }
 
     const petting = this.petTimer > 0
-    this.crouch += ((petting ? 1 : 0) - this.crouch) * Math.min(1, 6 * dt)
 
     // Wandering (paused while petting or while the puppy hangs around close)
     let speed = 0
@@ -186,8 +185,22 @@ export class Human {
     this.body.velocity.set(Math.sin(this.yaw) * speed, 0, Math.cos(this.yaw) * speed)
     this.body.position.y = 0.85
     this.body.quaternion.setFromEuler(0, this.yaw, 0)
+    this.lastSpeed = speed
+    this.pose(dt, speed, petting)
 
-    // Mesh sync + animation
+    return events
+  }
+
+  private lastSpeed = 0
+
+  /** True while crouched down petting (works for both AI and net-driven). */
+  get isPetting(): boolean {
+    return this.crouch > 0.3
+  }
+
+  /** Mesh sync + walk/crouch/pat animation (shared by AI and net paths). */
+  private pose(dt: number, speed: number, petting: boolean): void {
+    this.crouch += ((petting ? 1 : 0) - this.crouch) * Math.min(1, 6 * dt)
     this.mesh.position.set(this.body.position.x, 0, this.body.position.z)
     this.mesh.rotation.y = this.yaw
     if (speed > 0.01) {
@@ -211,8 +224,34 @@ export class Human {
     } else if (speed < 0.01) {
       this.arms[0].rotation.x *= 1 - Math.min(1, 8 * dt)
     }
+  }
 
-    return events
+  /** Compact pose for the host's NPC stream: [x, z, yaw, speed, flags]. */
+  syncPose(): number[] {
+    const r = (n: number): number => Math.round(n * 100) / 100
+    return [
+      r(this.body.position.x),
+      r(this.body.position.z),
+      r(this.yaw),
+      r(this.lastSpeed),
+      this.petTimer > 0 ? 1 : 0,
+    ]
+  }
+
+  /** Drive from the host's stream instead of local AI. Returns false. */
+  netDrive(dt: number, x: number, z: number, yaw: number, speed: number, flags: number): boolean {
+    const k = Math.min(1, 10 * dt)
+    this.body.velocity.set(0, 0, 0)
+    this.body.position.x += (x - this.body.position.x) * k
+    this.body.position.z += (z - this.body.position.z) * k
+    this.body.position.y = 0.85
+    let diff = yaw - this.yaw
+    while (diff > Math.PI) diff -= Math.PI * 2
+    while (diff < -Math.PI) diff += Math.PI * 2
+    this.yaw += diff * k
+    this.body.quaternion.setFromEuler(0, this.yaw, 0)
+    this.pose(dt, speed, (flags & 1) !== 0)
+    return false
   }
 }
 

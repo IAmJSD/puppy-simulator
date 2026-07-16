@@ -348,13 +348,60 @@ export class Critter {
     this.body.position.y = this.cfg.bodyY
     this.body.quaternion.setFromEuler(0, this.yaw, 0)
 
+    const alert = puppyDist < 2.2 && !fleeing
+    this.lastSpeed = speed
+    this.lastFlee = fleeing
+    this.lastAlert = alert
+    this.pose(dt, speed, fleeing, alert)
+
+    return events
+  }
+
+  private lastSpeed = 0
+  private lastFlee = false
+  private lastAlert = false
+
+  private pose(dt: number, speed: number, fleeing: boolean, alert: boolean): void {
     this.mesh.position.set(this.body.position.x, 0, this.body.position.z)
     this.mesh.rotation.y = this.yaw
     if (speed > 0.01) this.gait += dt * this.cfg.gaitRate * (fleeing ? 1.6 : 1)
-    const alert = puppyDist < 2.2 && !fleeing
     this.animateFn(this.gait, speed, alert)
+  }
 
-    return events
+  get touchRange(): number {
+    return this.cfg.touchRange
+  }
+
+  /** Compact pose for the host's NPC stream: [x, z, yaw, speed, flags]. */
+  syncPose(): number[] {
+    const r = (n: number): number => Math.round(n * 100) / 100
+    return [
+      r(this.body.position.x),
+      r(this.body.position.z),
+      r(this.yaw),
+      r(this.lastSpeed),
+      (this.lastFlee ? 1 : 0) | (this.lastAlert ? 2 : 0),
+    ]
+  }
+
+  /** Drive from the host's stream. Returns true when a flee just started. */
+  netDrive(dt: number, x: number, z: number, yaw: number, speed: number, flags: number): boolean {
+    const fleeing = (flags & 1) !== 0
+    const alert = (flags & 2) !== 0
+    const fleeStarted = fleeing && !this.wasFleeing
+    this.wasFleeing = fleeing
+    const k = Math.min(1, 12 * dt)
+    this.body.velocity.set(0, 0, 0)
+    this.body.position.x += (x - this.body.position.x) * k
+    this.body.position.z += (z - this.body.position.z) * k
+    this.body.position.y = this.cfg.bodyY
+    let diff = yaw - this.yaw
+    while (diff > Math.PI) diff -= Math.PI * 2
+    while (diff < -Math.PI) diff += Math.PI * 2
+    this.yaw += diff * k
+    this.body.quaternion.setFromEuler(0, this.yaw, 0)
+    this.pose(dt, speed, fleeing, alert)
+    return fleeStarted
   }
 }
 

@@ -911,6 +911,7 @@ net.onDelta = applyEntries
 net.onEvent = (kind, i) => {
   if (kind === 'pane' && panes[i]) queuePaneBreak(panes[i], false)
   else if (kind === 'bag' && bagStates[i]) queueBagBurst(bagStates[i], false)
+  else if (kind === 'scare' && net.isHost) critters[i]?.scare()
 }
 net.onSnapshotRequest = (from) => {
   net.sendSnapshot(from, {
@@ -925,6 +926,108 @@ net.onSnapshot = (snap) => {
   for (const i of snap.bags) if (bagStates[i]) queueBagBurst(bagStates[i], false)
   for (const i of snap.hyd) if (hydrants[i]) burstHydrant(hydrants[i], false)
   applyEntries(snap.bodies)
+}
+
+// --- NPC sync ---
+interface NpcLike {
+  body: CANNON.Body
+  syncPose(): number[]
+  netDrive(dt: number, x: number, z: number, yaw: number, speed: number, flags: number): boolean
+}
+const npcs: NpcLike[] = [...capybaras, ...humans, ...critters]
+const critterOffset = capybaras.length + humans.length
+let npcTargets: number[][] | null = null
+net.onNpc = (n) => {
+  npcTargets = n
+}
+
+const nearestTmp = new CANNON.Vec3()
+function nearestPuppyPos(x: number, z: number): CANNON.Vec3 {
+  let best: CANNON.Vec3 = puppy.body.position
+  let bd = (x - best.x) ** 2 + (z - best.z) ** 2
+  for (const rp of net.remotes.values()) {
+    const d = (x - rp.netPos.x) ** 2 + (z - rp.netPos.z) ** 2
+    if (d < bd) {
+      bd = d
+      nearestTmp.set(rp.netPos.x, rp.netPos.y, rp.netPos.z)
+      best = nearestTmp
+    }
+  }
+  return best
+}
+
+// Geometric NPC interactions against MY puppy: pets, boops, catches.
+const petAwardCooldowns = new Map<number, number>()
+const touchAwardCooldowns = new Map<number, number>()
+let heartAcc = 0
+function updateMyNpcInteractions(dt: number): void {
+  let beingPetted = false
+  humans.forEach((h, i) => {
+    const cd = petAwardCooldowns.get(i) ?? 0
+    if (cd > 0) petAwardCooldowns.set(i, cd - dt)
+    if (!h.isPetting) return
+    const dx = h.body.position.x - puppy.body.position.x
+    const dz = h.body.position.z - puppy.body.position.z
+    if (dx * dx + dz * dz > 4.4) return
+    beingPetted = true
+    if ((petAwardCooldowns.get(i) ?? 0) <= 0) {
+      petAwardCooldowns.set(i, 12)
+      happyWhine()
+      const s = toScreen(puppy.body.position)
+      award(30, s.x, s.y, 'PETS')
+      if (!shownPetBanner) {
+        shownPetBanner = true
+        showBanner('MAXIMUM GOOD DOG')
+      }
+    }
+  })
+  puppy.delighted = beingPetted
+  if (beingPetted) {
+    heartAcc += dt
+    if (heartAcc > 0.65) {
+      heartAcc = 0
+      const s = toScreen(puppy.body.position)
+      heartPopup(s.x, s.y - 40)
+    }
+  }
+
+  critters.forEach((c, i) => {
+    const cd = touchAwardCooldowns.get(i) ?? 0
+    if (cd > 0) {
+      touchAwardCooldowns.set(i, cd - dt)
+      return
+    }
+    const range = c.touchRange
+    if (range <= 0) return
+    const dx = c.body.position.x - puppy.body.position.x
+    const dy = c.body.position.y - puppy.body.position.y
+    const dz = c.body.position.z - puppy.body.position.z
+    if (dx * dx + dy * dy + dz * dz > range * range) return
+    touchAwardCooldowns.set(i, 30)
+    const s = toScreen(c.body.position)
+    if (c.kind === 'cat') {
+      award(35, s.x, s.y, 'CAT BOOP')
+      if (!critterBanners.cat) {
+        critterBanners.cat = true
+        showBanner('FELINE DIPLOMACY')
+      }
+    } else if (c.kind === 'mouse') {
+      squeak()
+      award(25, s.x, s.y, 'MOUSE!')
+      if (!critterBanners.mouse) {
+        critterBanners.mouse = true
+        showBanner('MICE TO MEET YOU')
+      }
+    }
+    // The flee must happen where the AI runs
+    if (net.connected && !net.isHost) net.sendEvent('scare', i)
+    else c.scare()
+  })
+
+  for (const [i, t] of lootCooldowns) {
+    if (t > dt) lootCooldowns.set(i, t - dt)
+    else lootCooldowns.delete(i)
+  }
 }
 
 // Kinematic ghost puppies (host only): remote players' bodies in OUR sim,
@@ -1019,54 +1122,44 @@ function frame(now: number): void {
   updateWater(dt)
   if (ground) airTime = 0
   else if (!puppy.climbing && !puppy.inWater) airTime += dt
-  for (const capy of capybaras) {
-    capy.update(dt, puppy.body.position, capy === ridingCapy && puppy.snuggling)
-  }
-  critters.forEach((critter, i) => {
-    const ev = critter.update(dt, puppy.body.position)
-    if (ev.fleeStarted && critter.kind === 'cat') hiss()
-    if (ev.touched) {
-      const s = toScreen(critter.body.position)
-      if (critter.kind === 'cat') {
-        award(35, s.x, s.y, 'CAT BOOP')
-        if (!critterBanners.cat) {
-          critterBanners.cat = true
-          showBanner('FELINE DIPLOMACY')
-        }
-      } else if (critter.kind === 'mouse') {
-        squeak()
-        award(25, s.x, s.y, 'MOUSE!')
-        if (!critterBanners.mouse) {
-          critterBanners.mouse = true
-          showBanner('MICE TO MEET YOU')
+  // NPCs: host/solo runs the AI (reacting to the NEAREST puppy, whoever's
+  // that is); lobby non-hosts drive their copies from the host's stream.
+  const npcRemote = net.connected && !net.isHost
+  if (!npcRemote) {
+    for (const capy of capybaras) {
+      const near = nearestPuppyPos(capy.body.position.x, capy.body.position.z)
+      const riddenLocal = capy === ridingCapy && puppy.snuggling
+      let riddenRemote = false
+      for (const rp of net.remotes.values()) {
+        const ddx = rp.netPos.x - capy.body.position.x
+        const ddz = rp.netPos.z - capy.body.position.z
+        if (rp.isSnuggling && ddx * ddx + ddz * ddz < 0.85) {
+          riddenRemote = true
+          break
         }
       }
+      capy.update(dt, near, riddenLocal || riddenRemote)
     }
-    const loot = lootCooldowns.get(i)
-    if (loot !== undefined) {
-      if (loot > dt) lootCooldowns.set(i, loot - dt)
-      else lootCooldowns.delete(i)
+    for (const h of humans) {
+      h.update(dt, nearestPuppyPos(h.body.position.x, h.body.position.z))
     }
-  })
-  let beingPetted = false
-  for (const human of humans) {
-    const ev = human.update(dt, puppy.body.position)
-    if (ev.petting) beingPetted = true
-    if (ev.petStarted) {
-      happyWhine()
-      const s = toScreen(puppy.body.position)
-      award(30, s.x, s.y, 'PETS')
-      if (!shownPetBanner) {
-        shownPetBanner = true
-        showBanner('MAXIMUM GOOD DOG')
-      }
+    for (const c of critters) {
+      const ev = c.update(dt, nearestPuppyPos(c.body.position.x, c.body.position.z))
+      if (ev.fleeStarted && c.kind === 'cat') hiss()
     }
-    if (ev.heartPulse) {
-      const s = toScreen(puppy.body.position)
-      heartPopup(s.x, s.y - 40)
+  } else if (npcTargets) {
+    for (const e of npcTargets) {
+      const n = npcs[e[0]]
+      if (!n) continue
+      const fleeStarted = n.netDrive(dt, e[1], e[2], e[3], e[4], e[5])
+      const ci = e[0] - critterOffset
+      if (fleeStarted && ci >= 0 && critters[ci]?.kind === 'cat') hiss()
     }
   }
-  puppy.delighted = beingPetted
+
+  // Interactions with MY puppy — geometric, so awards always land on the
+  // right player regardless of who hosts.
+  updateMyNpcInteractions(dt)
   // Carry the snoozing passenger along on the capybara's back
   if (ridingCapy && puppy.snuggling) {
     const rb = ridingCapy.body
@@ -1086,6 +1179,7 @@ function frame(now: number): void {
     if (net.isHost && deltaAcc >= 0.1) {
       deltaAcc = 0
       net.sendDelta(buildEntries(true))
+      net.sendNpc(npcs.map((n, i) => [i, ...n.syncPose()]))
     }
     for (const rp of net.remotes.values()) {
       rp.update(dt)

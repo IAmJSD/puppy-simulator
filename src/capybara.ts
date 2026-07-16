@@ -148,8 +148,14 @@ export class Capybara {
     this.body.velocity.set(Math.sin(this.yaw) * speed, 0, Math.cos(this.yaw) * speed)
     this.body.position.y = BODY_Y
     this.body.quaternion.setFromEuler(0, this.yaw, 0)
+    this.lastSpeed = speed
+    this.pose(dt, speed)
+  }
 
-    // Mesh sync + waddle
+  private lastSpeed = 0
+
+  /** Mesh sync + waddle + ear twitch (shared by AI and network-driven paths). */
+  private pose(dt: number, speed: number): void {
     this.mesh.position.set(this.body.position.x, 0, this.body.position.z)
     this.mesh.rotation.y = this.yaw
     if (speed > 0.01) {
@@ -172,6 +178,28 @@ export class Capybara {
     this.ears[0].rotation.z = twitch
     this.ears[1].rotation.z = -twitch
     this.head.rotation.x = Math.sin(this.gait * 0.5) * 0.03
+  }
+
+  /** Compact pose for the host's NPC stream: [x, z, yaw, speed, flags]. */
+  syncPose(): number[] {
+    const r = (n: number): number => Math.round(n * 100) / 100
+    return [r(this.body.position.x), r(this.body.position.z), r(this.yaw), r(this.lastSpeed), 0]
+  }
+
+  /** Drive from the host's stream instead of local AI. Returns false (no events). */
+  netDrive(dt: number, x: number, z: number, yaw: number, speed: number, _flags: number): boolean {
+    const k = Math.min(1, 10 * dt)
+    this.body.velocity.set(0, 0, 0)
+    this.body.position.x += (x - this.body.position.x) * k
+    this.body.position.z += (z - this.body.position.z) * k
+    this.body.position.y = BODY_Y
+    let diff = yaw - this.yaw
+    while (diff > Math.PI) diff -= Math.PI * 2
+    while (diff < -Math.PI) diff += Math.PI * 2
+    this.yaw += diff * k
+    this.body.quaternion.setFromEuler(0, this.yaw, 0)
+    this.pose(dt, speed)
+    return false
   }
 }
 
