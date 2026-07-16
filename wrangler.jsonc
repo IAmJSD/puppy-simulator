@@ -1,0 +1,13 @@
+{
+  "name": "puppy-simulator",
+  "compatibility_date": "2025-01-01",
+  "assets": {
+    "directory": "./dist"
+  },
+  "routes": [
+    {
+      "pattern": "puppy-simulator.astrid.place",
+      "custom_domain": true
+    }
+  ]
+}

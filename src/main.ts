@@ -1,0 +1,793 @@
+import * as THREE from 'three'
+import * as CANNON from 'cannon-es'
+import {
+  createWorld,
+  GROUP_STATIC,
+  GROUP_DYNAMIC,
+  GROUP_NO_CAMERA,
+  type Prop,
+  type Pane,
+} from './world'
+import { Puppy, type ClimbInfo } from './puppy'
+import { initInput, consumeMouse, onFirstInput, isDown } from './input'
+import { award, tickScore, sleepPopup, showBanner } from './score'
+import { thud, glassBreak, sigh, splashSound, crunch } from './audio'
+import { WaterFX } from './water'
+import { createCapybaras, type Capybara } from './capybara'
+
+const BARK_RADIUS = 4.5
+const BARK_KICK = 5 // delta-v given to props in bark range
+const KNOCK_SPEED = 2.2 // prop speed that counts as "knocked"
+const RESETTLE_TIME = 1.5 // seconds of stillness before a prop can score again
+
+// --- Renderer ---
+const renderer = new THREE.WebGLRenderer({ antialias: true })
+renderer.setSize(window.innerWidth, window.innerHeight)
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio))
+renderer.shadowMap.enabled = true
+renderer.shadowMap.type = THREE.PCFSoftShadowMap
+document.body.appendChild(renderer.domElement)
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 450)
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight
+  camera.updateProjectionMatrix()
+  renderer.setSize(window.innerWidth, window.innerHeight)
+})
+
+// --- World + puppy ---
+const {
+  scene,
+  world,
+  props,
+  panes,
+  snuggleSpots,
+  climbables,
+  waterZones,
+  waterJets,
+  dynamicDecor,
+  treatBags,
+  puppyMaterial,
+} = createWorld()
+const waterFX = new WaterFX(scene, waterJets)
+
+// Capybaras: a herd by the pond, one soaking in the pool. Each one's back is
+// a mobile snuggle spot, because capybaras allow this. Everyone knows this.
+const capybaras = createCapybaras(scene, world, [
+  [-66, 91, 7],
+  [-73, 90, 7],
+  [-69, 99, 7],
+  [-76, 96, 7],
+  [38.5, 31.5, 0], // pool enjoyer, not going anywhere
+])
+for (const capy of capybaras) {
+  snuggleSpots.push({ x: 0, y: 0, z: 0, r: 0.7, name: 'CAPYBARA', body: capy.body, dy: 0.68 })
+}
+const unbotheredCooldowns = new Map<number, number>()
+let ridingCapy: Capybara | null = null
+
+// Fire hydrants erupt into geysers when knocked over
+const UP = new CANNON.Vec3(0, 1, 0)
+const hydrantUp = new CANNON.Vec3()
+const hydrants = props
+  .filter((p) => p.name === 'FIRE HYDRANT')
+  .map((p) => ({ prop: p, x0: p.body.position.x, z0: p.body.position.z, burst: false }))
+
+function updateHydrants(): void {
+  for (const h of hydrants) {
+    if (h.burst) continue
+    const b = h.prop.body
+    b.quaternion.vmult(UP, hydrantUp)
+    const dx = b.position.x - h.x0
+    const dz = b.position.z - h.z0
+    if (hydrantUp.y < 0.5 || dx * dx + dz * dz > 2) {
+      h.burst = true
+      waterFX.addJet({ x: h.x0, y: 0.05, z: h.z0, vx: 0, vy: 8.5, vz: 0, spread: 1.4, rate: 45 })
+      waterZones.push({ x: h.x0, z: h.z0, r: 1.3, name: 'HYDRANT GEYSER' })
+      splashSound(1)
+      const s = toScreen(b.position)
+      award(60, s.x, s.y, 'GUSHER')
+      showBanner('OPEN HYDRANT SUMMER')
+    }
+  }
+}
+const puppy = new Puppy(world, new THREE.Vector3(0, 0, 4), puppyMaterial)
+scene.add(puppy.mesh)
+
+initInput(renderer.domElement)
+onFirstInput(() => document.getElementById('intro')!.classList.add('hidden'))
+
+// --- Camera orbit state ---
+let camYaw = Math.PI
+let camPitch = 0.4
+let camDist = 7
+let camActualDist = 7 // camDist after wall-occlusion clamping
+const camTarget = new THREE.Vector3()
+const camRayResult = new CANNON.RaycastResult()
+const CAMERA_RAY_MASK = ~(GROUP_DYNAMIC | GROUP_NO_CAMERA)
+
+// --- Bark shockwave rings ---
+interface Ring {
+  mesh: THREE.Mesh
+  age: number
+}
+const rings: Ring[] = []
+const ringGeo = new THREE.RingGeometry(0.85, 1, 32)
+ringGeo.rotateX(-Math.PI / 2)
+
+function spawnRing(position: THREE.Vector3): void {
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.8,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  })
+  const mesh = new THREE.Mesh(ringGeo, mat)
+  mesh.position.set(position.x, 0.08, position.z)
+  scene.add(mesh)
+  rings.push({ mesh, age: 0 })
+}
+
+function updateRings(dt: number): void {
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i]
+    r.age += dt
+    const t = r.age / 0.45
+    if (t >= 1) {
+      scene.remove(r.mesh)
+      ;(r.mesh.material as THREE.Material).dispose()
+      rings.splice(i, 1)
+      continue
+    }
+    const s = 0.5 + t * BARK_RADIUS
+    r.mesh.scale.set(s, 1, s)
+    ;(r.mesh.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - t)
+  }
+}
+
+// --- Breakable glass ---
+// Panes are physics triggers: anything dynamic touching one queues a shatter.
+// Removal happens outside world.step (removing bodies mid-step is unsafe).
+const paneBreakQueue: Pane[] = []
+
+for (const pane of panes) {
+  pane.body.addEventListener('collide', () => {
+    if (!pane.broken) {
+      pane.broken = true
+      paneBreakQueue.push(pane)
+    }
+  })
+}
+
+interface Shard {
+  mesh: THREE.Mesh
+  vel: THREE.Vector3
+  age: number
+}
+const shards: Shard[] = []
+const shardGeo = new THREE.BoxGeometry(0.12, 0.12, 0.02)
+
+function spawnShards(p: THREE.Vector3): void {
+  for (let i = 0; i < 12; i++) {
+    const mesh = new THREE.Mesh(
+      shardGeo,
+      new THREE.MeshBasicMaterial({ color: 0xcfe8f5, transparent: true, opacity: 0.85 }),
+    )
+    mesh.position.copy(p)
+    mesh.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3)
+    scene.add(mesh)
+    shards.push({
+      mesh,
+      vel: new THREE.Vector3((Math.random() - 0.5) * 4, Math.random() * 3, (Math.random() - 0.5) * 4),
+      age: 0,
+    })
+  }
+}
+
+function updateShards(dt: number): void {
+  for (let i = shards.length - 1; i >= 0; i--) {
+    const s = shards[i]
+    s.age += dt
+    if (s.age > 0.9) {
+      scene.remove(s.mesh)
+      ;(s.mesh.material as THREE.Material).dispose()
+      shards.splice(i, 1)
+      continue
+    }
+    s.vel.y -= 9.8 * dt
+    s.mesh.position.addScaledVector(s.vel, dt)
+    s.mesh.rotation.x += 6 * dt
+    s.mesh.rotation.z += 4 * dt
+    ;(s.mesh.material as THREE.MeshBasicMaterial).opacity = 0.85 * (1 - s.age / 0.9)
+  }
+}
+
+function processPaneBreaks(): void {
+  for (const pane of paneBreakQueue.splice(0)) {
+    world.removeBody(pane.body)
+    pane.mesh.removeFromParent()
+    const s = toScreen(pane.body.position)
+    award(30, s.x, s.y, 'WINDOW')
+    glassBreak()
+    // Use the body position: house panes live inside rotated groups, so the
+    // mesh's local position isn't world space.
+    spawnShards(new THREE.Vector3(pane.body.position.x, pane.body.position.y, pane.body.position.z))
+  }
+}
+
+function bark(origin: THREE.Vector3): void {
+  spawnRing(origin)
+  const o = new CANNON.Vec3(origin.x, origin.y + 0.3, origin.z)
+  // Barking shatters nearby unbroken windows
+  for (const pane of panes) {
+    if (pane.broken) continue
+    if (pane.body.position.vsub(o).length() <= BARK_RADIUS) {
+      pane.broken = true
+      paneBreakQueue.push(pane)
+    }
+  }
+  for (const prop of props) {
+    const d = prop.body.position.vsub(o)
+    const dist = d.length()
+    if (dist > BARK_RADIUS) continue
+    const falloff = 1 - (dist / BARK_RADIUS) * 0.6
+    d.normalize()
+    d.y = Math.max(d.y, 0.55) // scoop things upward for maximum drama
+    d.normalize()
+    prop.body.wakeUp()
+    prop.body.applyImpulse(d.scale(BARK_KICK * prop.body.mass * falloff))
+  }
+  // Barking bursts treat bags in range
+  for (const state of bagStates) {
+    if (state.burst) continue
+    if (state.bag.body.position.vsub(o).length() <= BARK_RADIUS) {
+      state.burst = true
+      bagBurstQueue.push(state)
+    }
+  }
+  // Capybaras are physically and emotionally immune to barking
+  capybaras.forEach((capy, i) => {
+    if (capy.body.position.vsub(o).length() > BARK_RADIUS) return
+    if ((unbotheredCooldowns.get(i) ?? 0) > 0) return
+    unbotheredCooldowns.set(i, 60)
+    const s = toScreen(capy.body.position)
+    award(50, s.x, s.y, 'UNBOTHERED')
+  })
+}
+
+// --- Raycast that actually works ---
+// world.raycastClosest relies on the broadphase's aabbQuery, which is
+// unreliable for SAPBroadphase (rays silently miss existing bodies). Brute
+// force over all bodies instead — trivial at this body count.
+const staticRay = new CANNON.Ray()
+function raycastStatic(
+  fromX: number,
+  fromY: number,
+  fromZ: number,
+  toX: number,
+  toY: number,
+  toZ: number,
+  mask: number,
+  result: CANNON.RaycastResult,
+): boolean {
+  result.reset()
+  staticRay.from.set(fromX, fromY, fromZ)
+  staticRay.to.set(toX, toY, toZ)
+  staticRay.skipBackfaces = false
+  staticRay.collisionFilterMask = mask
+  staticRay.collisionFilterGroup = -1
+  staticRay.mode = CANNON.RAY_MODES.CLOSEST
+  staticRay.result = result
+  ;(staticRay as unknown as { updateDirection(): void }).updateDirection()
+  staticRay.intersectBodies(world.bodies, result)
+  return result.hasHit
+}
+
+// --- Contact classification ---
+// groundNormal: the most floor-like contact (null while airborne) — used to
+// steer along slopes. wallNormals: every steep contact — used to stop the
+// controller from shoving the puppy into walls (constant shoving makes the
+// solver tolerate visible penetration).
+const groundNormal = new THREE.Vector3()
+const wallNormals: THREE.Vector3[] = []
+const wallMemory: THREE.Vector3[] = []
+let wallMemoryTtl = 0
+
+// Collide-and-slide brake: raycast along the puppy's velocity and cap the
+// approach speed toward static geometry so one physics step can never bury
+// the sphere inside a wall (the solver is slow to squeeze it back out).
+const moveRayResult = new CANNON.RaycastResult()
+const PUPPY_R = 0.36 // sphere radius + small skin
+function brakeAgainstStatics(dt: number): void {
+  const v = puppy.body.velocity
+  const vlen = v.length()
+  if (vlen < 0.5) return
+  const p = puppy.body.position
+  const reach = PUPPY_R + vlen * dt + 0.05
+  const hit = raycastStatic(
+    p.x,
+    p.y,
+    p.z,
+    p.x + (v.x / vlen) * reach,
+    p.y + (v.y / vlen) * reach,
+    p.z + (v.z / vlen) * reach,
+    GROUP_STATIC,
+    moveRayResult,
+  )
+  if (!hit) return
+  const n = moveRayResult.hitNormalWorld // faces back toward the puppy
+  const into = -(v.x * n.x + v.y * n.y + v.z * n.z)
+  const allowed = Math.max(0, (moveRayResult.distance - PUPPY_R) / dt)
+  if (into > allowed) {
+    const cut = into - allowed
+    v.x += n.x * cut
+    v.y += n.y * cut
+    v.z += n.z * cut
+  }
+}
+function collectContacts(): THREE.Vector3 | null {
+  wallNormals.length = 0
+  let best = 0.5
+  let found = false
+  for (const c of world.contacts) {
+    if (c.bi !== puppy.body && c.bj !== puppy.body) continue
+    const other = c.bi === puppy.body ? c.bj : c.bi
+    const s = c.bi === puppy.body ? -1 : 1
+    const nx = c.ni.x * s
+    const ny = c.ni.y * s
+    const nz = c.ni.z * s
+    if (ny > best) {
+      best = ny
+      found = true
+      groundNormal.set(nx, ny, nz)
+    } else if (ny <= 0.5 && other.mass === 0) {
+      // Only STATIC contacts count as walls: dynamic bodies (doors, props)
+      // should yield to nuzzling, not cancel the push.
+      wallNormals.push(new THREE.Vector3(nx, ny, nz))
+    }
+  }
+  return found ? groundNormal : null
+}
+
+// --- Scoring ---
+const projected = new THREE.Vector3()
+
+function toScreen(p: CANNON.Vec3): { x: number; y: number } {
+  projected.set(p.x, p.y, p.z).project(camera)
+  return {
+    x: THREE.MathUtils.clamp((projected.x * 0.5 + 0.5) * window.innerWidth, 60, window.innerWidth - 60),
+    y: THREE.MathUtils.clamp((-projected.y * 0.5 + 0.5) * window.innerHeight, 60, window.innerHeight - 120),
+  }
+}
+
+function updateProp(prop: Prop, dt: number): void {
+  const b = prop.body
+  prop.mesh.position.set(b.position.x, b.position.y, b.position.z)
+  prop.mesh.quaternion.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w)
+
+  const speed = b.velocity.length() + b.angularVelocity.length() * 0.3
+  if (!prop.scored && speed > KNOCK_SPEED) {
+    prop.scored = true
+    prop.settleTime = 0
+    const s = toScreen(b.position)
+    award(prop.points, s.x, s.y, prop.name)
+    thud(Math.min(1, speed / 9))
+  } else if (prop.scored) {
+    if (speed < 0.4) {
+      prop.settleTime += dt
+      if (prop.settleTime > RESETTLE_TIME) {
+        prop.scored = false
+        prop.settleTime = 0
+      }
+    } else {
+      prop.settleTime = 0
+    }
+  }
+}
+
+// --- Snuggling ---
+// On a cozy spot, E snuggles instead of barking (resting quietly for a
+// moment also works). Any input wakes the puppy back up.
+const MOVE_KEYS = [
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'Space',
+]
+const eHintEl = document.getElementById('e-hint')!
+let restTimer = 0
+let zzzTimer = 0
+let prevEDown = false
+let shownSnuggleBanner = false
+const napCooldowns = new Map<string, number>() // spot name -> seconds until next award
+
+function anyMoveDown(): boolean {
+  return MOVE_KEYS.some((k) => isDown(k))
+}
+
+function currentSnuggleSpot(): (typeof snuggleSpots)[number] | null {
+  const p = puppy.body.position
+  for (const spot of snuggleSpots) {
+    // Furniture spots (beds, couches) follow their body wherever it's shoved
+    const sx = spot.body ? spot.body.position.x : spot.x
+    const sy = spot.body ? spot.body.position.y + (spot.dy ?? 0) : spot.y
+    const sz = spot.body ? spot.body.position.z : spot.z
+    const dx = p.x - sx
+    const dz = p.z - sz
+    if (dx * dx + dz * dz <= spot.r * spot.r && Math.abs(p.y - sy) < 1) return spot
+  }
+  return null
+}
+
+let shownCapyBanner = false
+
+function enterSnuggle(spot: (typeof snuggleSpots)[number]): void {
+  puppy.setSnuggling(true)
+  restTimer = 0
+  zzzTimer = 0.8
+  sigh()
+  if (spot.name === 'CAPYBARA') {
+    ridingCapy = capybaras.find((c) => c.body === spot.body) ?? null
+    if (!shownCapyBanner) {
+      shownCapyBanner = true
+      showBanner('FRIENDSHIP ACHIEVED')
+    }
+  } else if (!shownSnuggleBanner) {
+    shownSnuggleBanner = true
+    showBanner('SNUG AS A BUG')
+  }
+  if (!napCooldowns.has(spot.name)) {
+    napCooldowns.set(spot.name, 30)
+    const s = toScreen(puppy.body.position)
+    award(25, s.x, s.y, `COZY NAP (${spot.name})`)
+  }
+}
+
+function updateSnuggle(dt: number, grounded: boolean): void {
+  for (const [name, t] of napCooldowns) {
+    if (t > dt) napCooldowns.set(name, t - dt)
+    else napCooldowns.delete(name)
+  }
+
+  const ePressed = isDown('KeyE') && !prevEDown
+  prevEDown = isDown('KeyE')
+  const spot = currentSnuggleSpot()
+
+  // Context-sensitive E in the controls bar
+  const hint = puppy.snuggling ? 'E wake up' : spot ? 'E snuggle' : 'E bark'
+  if (eHintEl.textContent !== hint) eHintEl.textContent = hint
+
+  if (puppy.snuggling) {
+    if (anyMoveDown() || ePressed) {
+      puppy.setSnuggling(false)
+      puppy.muzzle(0.4) // the wake-up press shouldn't also bark
+      ridingCapy = null
+      restTimer = 0
+    } else {
+      zzzTimer -= dt
+      if (zzzTimer <= 0) {
+        zzzTimer = 1.4
+        const s = toScreen(puppy.body.position)
+        sleepPopup(s.x + 24, s.y - 30)
+      }
+    }
+    return
+  }
+
+  if (!spot || !grounded) {
+    restTimer = 0
+    return
+  }
+
+  if (ePressed) {
+    enterSnuggle(spot)
+    return
+  }
+
+  // Resting quietly on the spot still works
+  const speed = Math.hypot(puppy.body.velocity.x, puppy.body.velocity.z)
+  if (speed < 0.6 && !anyMoveDown() && !isDown('KeyE')) {
+    restTimer += dt
+    if (restTimer > 0.6) enterSnuggle(spot)
+  } else {
+    restTimer = 0
+  }
+}
+
+// --- Water play ---
+let wasInWater = false
+let rippleTimer = 0
+let airTime = 0 // seconds airborne — cashed in as BELLY FLOP points on water entry
+const splashCooldowns = new Map<string, number>()
+
+function updateWater(dt: number): void {
+  for (const [name, t] of splashCooldowns) {
+    if (t > dt) splashCooldowns.set(name, t - dt)
+    else splashCooldowns.delete(name)
+  }
+
+  const p = puppy.body.position
+  let zone = null
+  for (const z of waterZones) {
+    const dx = p.x - z.x
+    const dz = p.z - z.z
+    if (dx * dx + dz * dz <= z.r * z.r && p.y < 1.6) {
+      zone = z
+      break
+    }
+  }
+  puppy.inWater = zone !== null
+
+  if (zone) {
+    const speed = puppy.body.velocity.length()
+    if (!wasInWater) {
+      // Entry splash, scaled by how hard the puppy hit the water
+      const intensity = Math.min(1, speed / 8)
+      waterFX.splash(p.x, 0.35, p.z, 10 + Math.round(intensity * 18), 2 + intensity * 3)
+      splashSound(intensity)
+      if (!splashCooldowns.has(zone.name)) {
+        splashCooldowns.set(zone.name, 20)
+        const s = toScreen(p)
+        award(15, s.x, s.y, `SPLASH (${zone.name})`)
+      }
+      // Belly flop: paid by airtime, no cooldown — style is skill
+      if (airTime > 0.35) {
+        const pts = Math.min(150, Math.round(airTime * 80))
+        const s = toScreen(p)
+        award(pts, s.x, s.y - 40, 'BELLY FLOP')
+        waterFX.splash(p.x, 0.4, p.z, 30, 4.5)
+        splashSound(1)
+        if (airTime > 1.1) showBanner('MAJESTIC BELLY FLOP')
+      }
+    }
+    // Wading kicks up ripples and droplets
+    rippleTimer -= dt
+    if (rippleTimer <= 0 && speed > 1) {
+      rippleTimer = 0.3
+      waterFX.ripple(p.x, 0.32, p.z)
+      if (speed > 4) waterFX.splash(p.x, 0.3, p.z, 4, 1.6)
+    }
+  }
+  wasInWater = zone !== null
+}
+
+// --- Treat bags & kibble ---
+// Bags burst on a hard hit (headbutt, fall, bark); the kibble inside spills
+// out as physics pieces the puppy eats by walking over them.
+interface BagState {
+  bag: (typeof treatBags)[number]
+  burst: boolean
+}
+interface Kibble {
+  mesh: THREE.Mesh
+  body: CANNON.Body
+}
+const bagStates: BagState[] = treatBags.map((bag) => ({ bag, burst: false }))
+const bagBurstQueue: BagState[] = []
+const kibbles: Kibble[] = []
+const kibbleGeo = new THREE.SphereGeometry(0.06, 6, 5)
+const kibbleMats = [0xa5692e, 0x8a542a, 0xb87d3a].map(
+  (c) => new THREE.MeshLambertMaterial({ color: c }),
+)
+let treatsEaten = 0
+
+for (const state of bagStates) {
+  state.bag.body.addEventListener('collide', (e: { contact: CANNON.ContactEquation }) => {
+    if (state.burst) return
+    if (Math.abs(e.contact.getImpactVelocityAlongNormal()) > 4.5) {
+      state.burst = true
+      bagBurstQueue.push(state)
+    }
+  })
+}
+
+function spawnKibble(x: number, y: number, z: number): void {
+  const mesh = new THREE.Mesh(kibbleGeo, kibbleMats[kibbles.length % kibbleMats.length])
+  mesh.castShadow = true
+  scene.add(mesh)
+  const body = new CANNON.Body({ mass: 0.05, shape: new CANNON.Sphere(0.055) })
+  body.collisionFilterGroup = GROUP_DYNAMIC
+  body.linearDamping = 0.35
+  body.position.set(x, y, z)
+  const a = Math.random() * Math.PI * 2
+  const r = 1 + Math.random() * 2.2
+  body.velocity.set(Math.cos(a) * r, 2 + Math.random() * 2.5, Math.sin(a) * r)
+  world.addBody(body)
+  kibbles.push({ mesh, body })
+}
+
+function processBagBursts(): void {
+  for (const state of bagBurstQueue.splice(0)) {
+    const p = state.bag.body.position
+    world.removeBody(state.bag.body)
+    state.bag.mesh.visible = false
+    // Torn bag husk stays behind
+    const husk = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.22, 0.52), new THREE.MeshLambertMaterial({ color: 0xe8762c }))
+    husk.position.set(p.x, 0.11, p.z)
+    husk.rotation.y = Math.random() * 3
+    husk.castShadow = true
+    scene.add(husk)
+    for (let i = 0; i < 16; i++) spawnKibble(p.x, Math.max(0.5, p.y), p.z)
+    thud(1)
+    crunch()
+    const s = toScreen(p)
+    award(20, s.x, s.y, 'JACKPOT')
+  }
+}
+
+function updateKibble(): void {
+  const pp = puppy.body.position
+  for (let i = kibbles.length - 1; i >= 0; i--) {
+    const k = kibbles[i]
+    k.mesh.position.set(k.body.position.x, k.body.position.y, k.body.position.z)
+    const dx = k.body.position.x - pp.x
+    const dy = k.body.position.y - pp.y
+    const dz = k.body.position.z - pp.z
+    if (dx * dx + dy * dy + dz * dz < 0.36) {
+      scene.remove(k.mesh)
+      world.removeBody(k.body)
+      kibbles.splice(i, 1)
+      crunch()
+      puppy.energize(1.5)
+      treatsEaten++
+      const s = toScreen(pp)
+      award(5, s.x, s.y, 'NOM')
+      if (treatsEaten === 15) showBanner('TREAT GOBLIN')
+      else if (treatsEaten === 40) showBanner('INSATIABLE')
+    }
+  }
+}
+
+// --- Tree climbing ---
+function currentClimbable(): ClimbInfo | null {
+  const p = puppy.body.position
+  for (const c of climbables) {
+    const dx = c.x - p.x
+    const dz = c.z - p.z
+    const dist = Math.hypot(dx, dz)
+    if (dist > 0.01 && dist < c.r + 0.8 && p.y < c.topY + 0.5) {
+      return { dirX: dx / dist, dirZ: dz / dist, dist, radius: c.r, topY: c.topY }
+    }
+  }
+  return null
+}
+
+// --- Main loop ---
+let lastTime = performance.now()
+
+function frame(now: number): void {
+  requestAnimationFrame(frame)
+  const dt = Math.min(0.05, (now - lastTime) / 1000)
+  lastTime = now
+  if (dt <= 0) return
+
+  // Camera input
+  const m = consumeMouse()
+  camYaw -= m.dx * 0.005
+  camPitch = THREE.MathUtils.clamp(camPitch + m.dy * 0.005, 0.08, 1.2)
+  camDist = THREE.MathUtils.clamp(camDist + m.wheel * 0.01, 3.5, 14)
+
+  // Simulate
+  world.step(1 / 60, dt, 4)
+
+  const ground = collectContacts()
+  // Wall contacts flicker (resolve → separate → re-slam), so remember them
+  // briefly — otherwise the controller re-rams the wall on every separation
+  // frame and the solver settles into visible penetration.
+  if (wallNormals.length > 0) {
+    wallMemory.length = 0
+    wallMemory.push(...wallNormals)
+    wallMemoryTtl = 0.2
+  } else {
+    wallMemoryTtl -= dt
+    if (wallMemoryTtl <= 0) wallMemory.length = 0
+  }
+  // Snuggle first: an E press on a cozy spot must become a snuggle, not a
+  // bark (a snuggling puppy skips input handling in update()).
+  updateSnuggle(dt, ground !== null)
+  const barkEvent = puppy.update(dt, camYaw, ground, wallMemory, currentClimbable())
+  brakeAgainstStatics(dt)
+  if (barkEvent) bark(barkEvent.position)
+
+  updateWater(dt)
+  if (ground) airTime = 0
+  else if (!puppy.climbing && !puppy.inWater) airTime += dt
+  for (const capy of capybaras) {
+    capy.update(dt, puppy.body.position, capy === ridingCapy && puppy.snuggling)
+  }
+  // Carry the snoozing passenger along on the capybara's back
+  if (ridingCapy && puppy.snuggling) {
+    const rb = ridingCapy.body
+    puppy.body.position.set(rb.position.x, rb.position.y + 0.66, rb.position.z)
+    puppy.body.velocity.set(rb.velocity.x, 0, rb.velocity.z)
+    puppy.face(ridingCapy.heading)
+  }
+  updateHydrants()
+  processBagBursts()
+  updateKibble()
+  for (const [i, t] of unbotheredCooldowns) {
+    if (t > dt) unbotheredCooldowns.set(i, t - dt)
+    else unbotheredCooldowns.delete(i)
+  }
+  processPaneBreaks()
+  for (const prop of props) updateProp(prop, dt)
+  for (const d of dynamicDecor) {
+    d.mesh.position.set(d.body.position.x, d.body.position.y, d.body.position.z)
+    d.mesh.quaternion.set(d.body.quaternion.x, d.body.quaternion.y, d.body.quaternion.z, d.body.quaternion.w)
+  }
+  waterFX.update(dt)
+  updateRings(dt)
+  updateShards(dt)
+  tickScore(dt)
+
+  // Camera follow with wall occlusion: raycast toward the desired position and
+  // pull the camera in front of whatever static geometry it would clip through.
+  const desiredTarget = new THREE.Vector3(
+    puppy.body.position.x,
+    puppy.body.position.y + 0.6,
+    puppy.body.position.z,
+  )
+  camTarget.lerp(desiredTarget, 1 - Math.exp(-10 * dt))
+  // The smoothed target can cut corners through walls (e.g. turning sharply
+  // through a doorway), which would start the occlusion ray inside geometry.
+  // If a static separates it from the puppy, snap it.
+  if (
+    raycastStatic(
+      desiredTarget.x,
+      desiredTarget.y,
+      desiredTarget.z,
+      camTarget.x,
+      camTarget.y,
+      camTarget.z,
+      CAMERA_RAY_MASK,
+      camRayResult,
+    )
+  ) {
+    camTarget.copy(desiredTarget)
+  }
+  const cp = Math.cos(camPitch)
+  const dirX = Math.sin(camYaw) * cp
+  const dirY = Math.sin(camPitch)
+  const dirZ = Math.cos(camYaw) * cp
+
+  raycastStatic(
+    camTarget.x,
+    camTarget.y,
+    camTarget.z,
+    camTarget.x + dirX * camDist,
+    camTarget.y + dirY * camDist,
+    camTarget.z + dirZ * camDist,
+    CAMERA_RAY_MASK,
+    camRayResult,
+  )
+  // No lower clamp that could push the camera past nearby geometry: if the
+  // wall is 0.4m away, the camera sits at 0.15m — never inside the wall.
+  const allowedDist = camRayResult.hasHit
+    ? Math.max(0.05, camRayResult.distance - 0.25)
+    : camDist
+  if (allowedDist < camActualDist) {
+    camActualDist = allowedDist // snap in instantly — never clip
+  } else {
+    camActualDist += (allowedDist - camActualDist) * (1 - Math.exp(-4 * dt)) // ease back out
+  }
+
+  camera.position.set(
+    camTarget.x + dirX * camActualDist,
+    Math.max(0.5, camTarget.y + dirY * camActualDist),
+    camTarget.z + dirZ * camActualDist,
+  )
+  camera.lookAt(camTarget)
+  // Ultra-close camera would be inside the puppy's head — hide the model
+  puppy.mesh.visible = camActualDist > 0.8
+
+  renderer.render(scene, camera)
+}
+
+requestAnimationFrame(frame)
