@@ -2,9 +2,25 @@
   "name": "puppy-simulator",
   "account_id": "ac2dd89af834dd17d7f5cf5df3789f08",
   "compatibility_date": "2025-01-01",
+  "main": "worker/index.ts",
   "assets": {
-    "directory": "./dist"
+    "directory": "./dist",
+    "binding": "ASSETS"
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LOBBY",
+        "class_name": "Lobby"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Lobby"]
+    }
+  ],
   "routes": [
     {
       "pattern": "puppy-simulator.astrid.place",

@@ -131,6 +131,87 @@
         color: #ff7ba6;
         animation-duration: 1.6s;
       }
+      .nameplate {
+        position: absolute;
+        transform: translate(-50%, -100%);
+        font-size: 13px;
+        color: #fff;
+        text-shadow: 1px 1px 0 var(--hud-shadow);
+        background: rgba(0, 0, 0, 0.28);
+        padding: 1px 9px;
+        border-radius: 9px;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      #players {
+        position: absolute;
+        top: 14px;
+        right: 18px;
+        font-size: 14px;
+        color: #fff;
+        text-shadow: 1px 1px 0 var(--hud-shadow);
+        background: rgba(0, 0, 0, 0.22);
+        border-radius: 10px;
+        padding: 6px 12px;
+        display: none;
+        text-align: right;
+      }
+      #players .dot {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        margin-right: 6px;
+      }
+      #mp-form {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        background: rgba(0, 0, 0, 0.25);
+        padding: 14px 22px;
+        border-radius: 14px;
+      }
+      #mp-form input {
+        font-family: inherit;
+        font-size: 15px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: none;
+        outline: none;
+        width: 200px;
+        text-align: center;
+      }
+      #colors {
+        display: flex;
+        gap: 8px;
+      }
+      .swatch {
+        width: 26px;
+        height: 26px;
+        border-radius: 13px;
+        border: 2px solid transparent;
+        cursor: pointer;
+        padding: 0;
+      }
+      .swatch.sel {
+        border-color: #fff;
+      }
+      #join {
+        font-family: inherit;
+        font-size: 16px;
+        padding: 7px 20px;
+        border: none;
+        border-radius: 9px;
+        background: var(--hud-yellow);
+        color: #3a2410;
+        cursor: pointer;
+      }
+      #mp-status {
+        font-size: 13px;
+        color: #ffb3b3;
+        min-height: 16px;
+      }
       #intro {
         position: fixed;
         inset: 0;
@@ -161,13 +242,21 @@
       <div id="combo">x1 COMBO</div>
       <div id="combo-bar"><div id="combo-bar-fill"></div></div>
       <div id="banner"></div>
+      <div id="players"></div>
       <div id="controls">WASD move &nbsp;·&nbsp; SHIFT zoomies &nbsp;·&nbsp; SPACE jump &nbsp;·&nbsp; <span id="e-hint">E bark</span> &nbsp;·&nbsp; drag mouse to look</div>
     </div>
     <div id="intro">
       <h1>🐶 PUPPY SIMULATOR</h1>
       <p>You are a very good dog. Destroy everything.</p>
+      <div id="mp-form">
+        <input id="nick" placeholder="nickname" maxlength="14" autocomplete="off" />
+        <div id="colors"></div>
+        <input id="lobby" placeholder="lobby id (e.g. park)" maxlength="24" autocomplete="off" />
+        <button id="join">Join lobby</button>
+        <div id="mp-status"></div>
+      </div>
       <p class="hint">WASD move · SHIFT zoomies · SPACE jump · E bark · drag mouse to look</p>
-      <p class="hint">Press any key to unleash the puppy</p>
+      <p class="hint">…or press any key to play solo</p>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

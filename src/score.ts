@@ -28,6 +28,10 @@ export function getCombo(): number {
   return Math.max(1, combo)
 }
 
+export function getScore(): number {
+  return score
+}
+
 /** Award base points (multiplied by the current combo). Returns points granted. */
 export function award(basePoints: number, screenX: number, screenY: number, label: string): number {
   combo = Math.min(MAX_COMBO, combo + 1)

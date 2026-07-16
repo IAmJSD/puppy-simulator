@@ -29,6 +29,8 @@ export function isDown(code: string): boolean {
 
 export function initInput(canvas: HTMLCanvasElement): void {
   window.addEventListener('keydown', (e) => {
+    // Typing in a form field (lobby setup) must not drive the puppy
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
     if (e.code === 'Space') e.preventDefault()
     keys.add(e.code)
     fireFirstInput()

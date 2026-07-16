@@ -8,10 +8,22 @@ import {
   type Prop,
   type Pane,
 } from './world'
-import { Puppy, type ClimbInfo } from './puppy'
+import { Puppy, DOG_COLORS, type ClimbInfo } from './puppy'
 import { initInput, consumeMouse, onFirstInput, isDown } from './input'
-import { award, tickScore, sleepPopup, heartPopup, showBanner } from './score'
-import { thud, glassBreak, sigh, splashSound, crunch, happyWhine, hiss, squeak, chitter } from './audio'
+import { award, tickScore, getScore, sleepPopup, heartPopup, showBanner } from './score'
+import {
+  thud,
+  glassBreak,
+  sigh,
+  splashSound,
+  crunch,
+  happyWhine,
+  hiss,
+  squeak,
+  chitter,
+  bark as barkSound,
+} from './audio'
+import { Net } from './net'
 import { createHumans } from './human'
 import { createCritters } from './critters'
 import { WaterFX } from './water'
@@ -133,6 +145,73 @@ scene.add(puppy.mesh)
 initInput(renderer.domElement)
 onFirstInput(() => document.getElementById('intro')!.classList.add('hidden'))
 
+// --- Multiplayer lobby ---
+const hudRoot = document.getElementById('hud')!
+const net = new Net(scene, hudRoot)
+const playersEl = document.getElementById('players')!
+let myNick = 'pup'
+let myColor = 0
+{
+  const nickEl = document.getElementById('nick') as HTMLInputElement
+  const lobbyEl = document.getElementById('lobby') as HTMLInputElement
+  const joinEl = document.getElementById('join') as HTMLButtonElement
+  const statusEl = document.getElementById('mp-status')!
+  const colorsEl = document.getElementById('colors')!
+  nickEl.value = `pup${Math.floor(Math.random() * 900 + 100)}`
+  DOG_COLORS.forEach((c, i) => {
+    const b = document.createElement('button')
+    b.className = 'swatch' + (i === 0 ? ' sel' : '')
+    b.style.background = `#${c.toString(16).padStart(6, '0')}`
+    b.addEventListener('click', () => {
+      myColor = i
+      puppy.setColor(DOG_COLORS[i])
+      colorsEl.querySelectorAll('.swatch').forEach((s) => s.classList.remove('sel'))
+      b.classList.add('sel')
+    })
+    colorsEl.appendChild(b)
+  })
+  joinEl.addEventListener('click', async () => {
+    const lobby = lobbyEl.value.trim().toLowerCase().replace(/[^\w-]/g, '')
+    if (!lobby) {
+      statusEl.textContent = 'enter a lobby id'
+      return
+    }
+    myNick = nickEl.value.trim().slice(0, 14) || 'pup'
+    statusEl.textContent = 'connecting…'
+    joinEl.disabled = true
+    try {
+      await net.connect(lobby, myNick, myColor)
+      document.getElementById('intro')!.classList.add('hidden')
+      playersEl.style.display = 'block'
+    } catch {
+      statusEl.textContent = 'could not join — check the lobby id and try again'
+      joinEl.disabled = false
+    }
+  })
+}
+
+net.onBark = (x, y, z) => {
+  spawnRing(new THREE.Vector3(x, y, z))
+  barkSound()
+  barkImpulse(new CANNON.Vec3(x, y + 0.3, z))
+}
+
+let playerListAcc = 0
+function refreshPlayerList(): void {
+  const rows = [
+    { nick: `${myNick} (you)`, color: myColor, score: getScore() },
+    ...[...net.remotes.values()].map((r) => ({ nick: r.nick, color: r.color, score: r.score })),
+  ].sort((a, b) => b.score - a.score)
+  playersEl.innerHTML = rows
+    .map(
+      (r) =>
+        `<div><span class="dot" style="background:#${(DOG_COLORS[r.color] ?? DOG_COLORS[0])
+          .toString(16)
+          .padStart(6, '0')}"></span>${r.nick.replace(/[<>&]/g, '')} — ${r.score}</div>`,
+    )
+    .join('')
+}
+
 // --- Camera orbit state ---
 let camYaw = Math.PI
 let camPitch = 0.4
@@ -252,17 +331,8 @@ function processPaneBreaks(): void {
   }
 }
 
-function bark(origin: THREE.Vector3): void {
-  spawnRing(origin)
-  const o = new CANNON.Vec3(origin.x, origin.y + 0.3, origin.z)
-  // Barking shatters nearby unbroken windows
-  for (const pane of panes) {
-    if (pane.broken) continue
-    if (pane.body.position.vsub(o).length() <= BARK_RADIUS) {
-      pane.broken = true
-      paneBreakQueue.push(pane)
-    }
-  }
+// The prop-shoving part of a bark — shared by local and remote barks
+function barkImpulse(o: CANNON.Vec3): void {
   for (const prop of props) {
     const d = prop.body.position.vsub(o)
     const dist = d.length()
@@ -273,6 +343,21 @@ function bark(origin: THREE.Vector3): void {
     d.normalize()
     prop.body.wakeUp()
     prop.body.applyImpulse(d.scale(BARK_KICK * prop.body.mass * falloff))
+  }
+}
+
+function bark(origin: THREE.Vector3): void {
+  spawnRing(origin)
+  net.sendBark(origin.x, origin.y, origin.z)
+  const o = new CANNON.Vec3(origin.x, origin.y + 0.3, origin.z)
+  barkImpulse(o)
+  // Barking shatters nearby unbroken windows
+  for (const pane of panes) {
+    if (pane.broken) continue
+    if (pane.body.position.vsub(o).length() <= BARK_RADIUS) {
+      pane.broken = true
+      paneBreakQueue.push(pane)
+    }
   }
   // Barking bursts treat bags in range
   for (const state of bagStates) {
@@ -850,6 +935,39 @@ function frame(now: number): void {
   processBagBursts()
   updateKibble()
   updateDoors(dt)
+
+  // Multiplayer: interpolate remote puppies, position nameplates, send state
+  if (net.connected || net.remotes.size > 0) {
+    for (const rp of net.remotes.values()) {
+      rp.update(dt)
+      const g = rp.parts.group
+      projected.set(g.position.x, g.position.y + 1.15, g.position.z).project(camera)
+      const onScreen = projected.z < 1 && Math.abs(projected.x) < 1.1 && Math.abs(projected.y) < 1.1
+      rp.nameEl.style.display = onScreen && g.visible ? 'block' : 'none'
+      if (onScreen) {
+        rp.nameEl.style.left = `${(projected.x * 0.5 + 0.5) * window.innerWidth}px`
+        rp.nameEl.style.top = `${(-projected.y * 0.5 + 0.5) * window.innerHeight}px`
+      }
+    }
+    net.maybeSendState(
+      dt,
+      puppy.body.position.x,
+      puppy.body.position.y,
+      puppy.body.position.z,
+      puppy.heading,
+      {
+        z: puppy.zoomies ? 1 : 0,
+        s: puppy.snuggling ? 1 : 0,
+        c: puppy.climbing ? 1 : 0,
+      },
+      getScore(),
+    )
+    playerListAcc += dt
+    if (playerListAcc > 1) {
+      playerListAcc = 0
+      refreshPlayerList()
+    }
+  }
   for (const [i, t] of unbotheredCooldowns) {
     if (t > dt) unbotheredCooldowns.set(i, t - dt)
     else unbotheredCooldowns.delete(i)

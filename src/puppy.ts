@@ -18,8 +18,112 @@ const SLIDE_ACCEL = 11 // extra downhill push while sliding hands-free
 const SLIDE_MAX = 16
 
 const FUR = 0xc68e5b
-const FUR_DARK = 0xa8713f
 const FUR_LIGHT = 0xe8c496
+
+/** Selectable dog coat colors (index is what goes over the wire). */
+export const DOG_COLORS = [0xc68e5b, 0x6c4a2f, 0x2e2a26, 0xe8dcc8, 0xd2722a, 0x7d8a99]
+
+export interface PuppyParts {
+  group: THREE.Group
+  legs: THREE.Mesh[]
+  tail: THREE.Mesh
+  ears: THREE.Mesh[]
+  head: THREE.Group
+  setColor: (fur: number) => void
+}
+
+/** The shared low-poly puppy model — used by the player and remote players. */
+export function buildPuppyMesh(furColor = FUR): PuppyParts {
+  const furMat = new THREE.MeshLambertMaterial({ color: furColor })
+  const furDarkMat = new THREE.MeshLambertMaterial({
+    color: new THREE.Color(furColor).multiplyScalar(0.72),
+  })
+  const furLightMat = new THREE.MeshLambertMaterial({ color: FUR_LIGHT })
+  const black = new THREE.MeshLambertMaterial({ color: 0x2b2119 })
+  const legs: THREE.Mesh[] = []
+  const ears: THREE.Mesh[] = []
+
+  const g = new THREE.Group()
+
+  // Body (forward is +Z)
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.36, 0.68), furMat)
+  body.position.set(0, 0.42, 0)
+  body.castShadow = true
+  g.add(body)
+
+  // Chest patch
+  const chest = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.22, 0.1), furLightMat)
+  chest.position.set(0, 0.36, 0.32)
+  g.add(chest)
+
+  // Head group so it can tilt
+  const head = new THREE.Group()
+  head.position.set(0, 0.62, 0.36)
+  g.add(head)
+
+  const skull = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.3, 0.3), furMat)
+  skull.castShadow = true
+  head.add(skull)
+
+  const snout = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.13, 0.16), furLightMat)
+  snout.position.set(0, -0.05, 0.2)
+  head.add(snout)
+
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.06, 0.05), black)
+  nose.position.set(0, -0.02, 0.29)
+  head.add(nose)
+
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.06, 0.03), black)
+    eye.position.set(0.09 * side, 0.06, 0.16)
+    head.add(eye)
+
+    const ear = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.22, 0.06), furDarkMat)
+    ear.position.set(0.16 * side, 0.1, -0.02)
+    ear.geometry.translate(0, -0.11, 0) // pivot at the top so it flops
+    ear.rotation.z = 0.5 * side
+    ear.castShadow = true
+    head.add(ear)
+    ears.push(ear)
+  }
+
+  // Legs — pivot at the hip
+  const legGeo = new THREE.BoxGeometry(0.1, 0.26, 0.1)
+  legGeo.translate(0, -0.13, 0)
+  for (const [x, z] of [
+    [-0.13, 0.24],
+    [0.13, 0.24],
+    [-0.13, -0.24],
+    [0.13, -0.24],
+  ]) {
+    const leg = new THREE.Mesh(legGeo, furDarkMat)
+    leg.position.set(x, 0.28, z)
+    leg.castShadow = true
+    g.add(leg)
+    legs.push(leg)
+  }
+
+  // Tail — pivot at the base, wags around Y
+  const tailGeo = new THREE.BoxGeometry(0.08, 0.08, 0.3)
+  tailGeo.translate(0, 0, -0.15)
+  const tail = new THREE.Mesh(tailGeo, furMat)
+  tail.position.set(0, 0.56, -0.32)
+  tail.rotation.x = -0.6
+  tail.castShadow = true
+  g.add(tail)
+
+  return {
+    group: g,
+    legs,
+    tail,
+    ears,
+    head,
+    setColor: (fur: number) => {
+      furMat.color.set(fur)
+      furDarkMat.color.set(fur).multiplyScalar(0.72)
+    },
+  }
+}
 
 export interface BarkEvent {
   position: THREE.Vector3
@@ -77,13 +181,30 @@ export class Puppy {
     this.facing = yaw
   }
 
+  get heading(): number {
+    return this.facing
+  }
+
+  /** Change coat color (multiplayer color selection). */
+  setColor(fur: number): void {
+    this.recolor(fur)
+  }
+
   /** Treats grant a short sugar-rush speed boost. Stacks up to ~9 seconds. */
   energize(seconds: number): void {
     this.treatTimer = Math.min(9, this.treatTimer + seconds)
   }
 
+  private recolor: (fur: number) => void
+
   constructor(world: CANNON.World, spawn: THREE.Vector3, material: CANNON.Material) {
-    this.mesh = this.buildMesh()
+    const parts = buildPuppyMesh()
+    this.mesh = parts.group
+    this.legs = parts.legs
+    this.tail = parts.tail
+    this.ears = parts.ears
+    this.head = parts.head
+    this.recolor = parts.setColor
     this.body = new CANNON.Body({
       mass: 8,
       shape: new CANNON.Sphere(BODY_RADIUS),
@@ -96,83 +217,6 @@ export class Puppy {
     this.body.collisionFilterGroup = GROUP_DYNAMIC // camera occlusion ray ignores dynamic bodies
     this.body.updateMassProperties()
     world.addBody(this.body)
-  }
-
-  private buildMesh(): THREE.Group {
-    const g = new THREE.Group()
-    const fur = new THREE.MeshLambertMaterial({ color: FUR })
-    const furDark = new THREE.MeshLambertMaterial({ color: FUR_DARK })
-    const furLight = new THREE.MeshLambertMaterial({ color: FUR_LIGHT })
-    const black = new THREE.MeshLambertMaterial({ color: 0x2b2119 })
-
-    // Body (forward is +Z)
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.36, 0.68), fur)
-    body.position.set(0, 0.42, 0)
-    body.castShadow = true
-    g.add(body)
-
-    // Chest patch
-    const chest = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.22, 0.1), furLight)
-    chest.position.set(0, 0.36, 0.32)
-    g.add(chest)
-
-    // Head group so it can tilt
-    this.head = new THREE.Group()
-    this.head.position.set(0, 0.62, 0.36)
-    g.add(this.head)
-
-    const skull = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.3, 0.3), fur)
-    skull.castShadow = true
-    this.head.add(skull)
-
-    const snout = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.13, 0.16), furLight)
-    snout.position.set(0, -0.05, 0.2)
-    this.head.add(snout)
-
-    const nose = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.06, 0.05), black)
-    nose.position.set(0, -0.02, 0.29)
-    this.head.add(nose)
-
-    for (const side of [-1, 1]) {
-      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.06, 0.03), black)
-      eye.position.set(0.09 * side, 0.06, 0.16)
-      this.head.add(eye)
-
-      const ear = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.22, 0.06), furDark)
-      ear.position.set(0.16 * side, 0.1, -0.02)
-      ear.geometry.translate(0, -0.11, 0) // pivot at the top so it flops
-      ear.rotation.z = 0.5 * side
-      ear.castShadow = true
-      this.head.add(ear)
-      this.ears.push(ear)
-    }
-
-    // Legs — pivot at the hip
-    const legGeo = new THREE.BoxGeometry(0.1, 0.26, 0.1)
-    legGeo.translate(0, -0.13, 0)
-    for (const [x, z] of [
-      [-0.13, 0.24],
-      [0.13, 0.24],
-      [-0.13, -0.24],
-      [0.13, -0.24],
-    ]) {
-      const leg = new THREE.Mesh(legGeo, furDark)
-      leg.position.set(x, 0.28, z)
-      leg.castShadow = true
-      g.add(leg)
-      this.legs.push(leg)
-    }
-
-    // Tail — pivot at the base, wags around Y
-    const tailGeo = new THREE.BoxGeometry(0.08, 0.08, 0.3)
-    tailGeo.translate(0, 0, -0.15)
-    this.tail = new THREE.Mesh(tailGeo, fur)
-    this.tail.position.set(0, 0.56, -0.32)
-    this.tail.rotation.x = -0.6
-    this.tail.castShadow = true
-    g.add(this.tail)
-
-    return g
   }
 
   /**
