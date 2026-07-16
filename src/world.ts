@@ -1111,11 +1111,13 @@ function setupNeighbourhood(
       const w = 1.4
       const h = 1.2
       const wy = 1.9
+      // Bars sit 2cm INTO the opening: flush with the wall's cut face they
+      // z-fight against it (checkered white/wall shimmer on every reveal)
       const frameParts: Array<[number, number, number, number]> = [
-        [w + 0.18, 0.1, wx, wy + h / 2 + 0.05],
-        [w + 0.18, 0.1, wx, wy - h / 2 - 0.05],
-        [0.1, h + 0.18, wx - w / 2 - 0.05, wy],
-        [0.1, h + 0.18, wx + w / 2 + 0.05, wy],
+        [w + 0.16, 0.1, wx, wy + h / 2 + 0.03],
+        [w + 0.16, 0.1, wx, wy - h / 2 - 0.03],
+        [0.1, h + 0.16, wx - w / 2 - 0.03, wy],
+        [0.1, h + 0.16, wx + w / 2 + 0.03, wy],
       ]
       for (const [fw, fh, fx, fy] of frameParts) {
         const f = new THREE.Mesh(new THREE.BoxGeometry(fw, fh, 0.42), white)
@@ -1763,12 +1765,14 @@ function setupMansion(
   })
   const trimD = T + 0.08
   const addPane = (w: number, h: number, x: number, y: number): void => {
-    // White frame around the opening — stays behind after the glass breaks
+    // White frame around the opening — stays behind after the glass breaks.
+    // Bars sit 2cm INTO the opening: flush with the wall's cut face they
+    // z-fight against it.
     const frameParts: Array<[number, number, number, number]> = [
-      [w + 0.18, 0.1, x, y + h / 2 + 0.05],
-      [w + 0.18, 0.1, x, y - h / 2 - 0.05],
-      [0.1, h + 0.18, x - w / 2 - 0.05, y],
-      [0.1, h + 0.18, x + w / 2 + 0.05, y],
+      [w + 0.16, 0.1, x, y + h / 2 + 0.03],
+      [w + 0.16, 0.1, x, y - h / 2 - 0.03],
+      [0.1, h + 0.16, x - w / 2 - 0.03, y],
+      [0.1, h + 0.16, x + w / 2 + 0.03, y],
     ]
     for (const [fw, fh, fx, fy] of frameParts) {
       const f = new THREE.Mesh(new THREE.BoxGeometry(fw, fh, trimD), white)

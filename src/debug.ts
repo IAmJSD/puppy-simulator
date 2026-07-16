@@ -39,6 +39,11 @@ createHumans(scene, world, [
   [30, 40, 5],
   [-58, 90, 6],
 ])
+if (q.get('noglass') === '1') {
+  scene.traverse((o) => {
+    if (o instanceof THREE.Mesh && o.material instanceof THREE.MeshPhongMaterial) o.visible = false
+  })
+}
 for (let i = 0; i < 120; i++) world.step(1 / 60)
 for (const p of [...props, ...dynamicDecor]) {
   p.mesh.position.set(p.body.position.x, p.body.position.y, p.body.position.z)
