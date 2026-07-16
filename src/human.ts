@@ -62,6 +62,7 @@ export class Human {
       shape: new CANNON.Box(new CANNON.Vec3(0.22, 0.85, 0.16)),
     })
     this.body.collisionFilterGroup = GROUP_DYNAMIC
+    this.body.allowSleep = false // a sleeping kinematic body ignores velocity writes
     this.body.position.set(x, 0.85, z)
     world.addBody(this.body)
   }

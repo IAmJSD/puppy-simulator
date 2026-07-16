@@ -45,6 +45,7 @@ export class Capybara {
       shape: new CANNON.Box(new CANNON.Vec3(0.55, 0.33, 0.28)),
     })
     this.body.collisionFilterGroup = GROUP_DYNAMIC
+    this.body.allowSleep = false // a sleeping kinematic body ignores velocity writes
     this.body.position.set(x, BODY_Y, z)
     world.addBody(this.body)
   }
