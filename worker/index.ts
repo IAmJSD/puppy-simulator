@@ -1,5 +1,7 @@
 // Multiplayer server: one Durable Object per lobby, relaying player state
-// and bark events over WebSockets. Static assets fall through to ASSETS.
+// and bark events over WebSockets. The oldest connected player is the
+// physics HOST: their simulation is authoritative, streamed as deltas and
+// snapshots which the DO relays. Static assets fall through to ASSETS.
 
 export interface Env {
   LOBBY: DurableObjectNamespace
@@ -17,6 +19,7 @@ interface PlayerInfo {
 
 export class Lobby {
   private sessions = new Map<WebSocket, PlayerInfo>()
+  private host: WebSocket | null = null
 
   async fetch(req: Request): Promise<Response> {
     if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
@@ -30,6 +33,14 @@ export class Lobby {
     const server = pair[1]
     this.handleSocket(server)
     return new Response(null, { status: 101, webSocket: client })
+  }
+
+  private send(ws: WebSocket, obj: unknown): void {
+    try {
+      ws.send(JSON.stringify(obj))
+    } catch {
+      // dead socket; close handler cleans up
+    }
   }
 
   private handleSocket(ws: WebSocket): void {
@@ -48,26 +59,60 @@ export class Lobby {
       } catch {
         return
       }
-      if (msg.t === 'join' && !this.sessions.has(ws)) {
+      const joined = this.sessions.has(ws)
+      if (msg.t === 'join' && !joined) {
         info.nick = String(msg.nick ?? 'pup').slice(0, 14) || 'pup'
         info.color = Math.max(0, Math.min(5, Number(msg.color) || 0))
         this.sessions.set(ws, info)
+        if (!this.host) this.host = ws
         const players = [...this.sessions.values()]
           .filter((p) => p.id !== info.id)
           .map((p) => ({ id: p.id, nick: p.nick, color: p.color, last: p.last }))
-        ws.send(JSON.stringify({ t: 'welcome', id: info.id, players }))
+        this.send(ws, {
+          t: 'welcome',
+          id: info.id,
+          host: this.sessions.get(this.host)?.id ?? info.id,
+          players,
+        })
         this.broadcast(ws, { t: 'joined', id: info.id, nick: info.nick, color: info.color })
-      } else if (msg.t === 'state' && this.sessions.has(ws)) {
+      } else if (!joined) {
+        return
+      } else if (msg.t === 'state') {
         info.last = msg
         this.broadcast(ws, { ...msg, t: 'state', id: info.id })
-      } else if (msg.t === 'bark' && this.sessions.has(ws)) {
+      } else if (msg.t === 'bark') {
         this.broadcast(ws, { t: 'bark', id: info.id, p: msg.p })
+      } else if (msg.t === 'ev') {
+        // One-shot world events (window broke, treat bag burst) — relay all
+        this.broadcast(ws, { t: 'ev', k: msg.k, i: msg.i })
+      } else if (msg.t === 'delta') {
+        // Authoritative physics stream — host only
+        if (ws === this.host) this.broadcast(ws, { t: 'delta', b: msg.b })
+      } else if (msg.t === 'reqsnap') {
+        if (this.host && this.host !== ws) {
+          this.send(this.host, { t: 'reqsnap', from: info.id })
+        }
+      } else if (msg.t === 'snapshot' && ws === this.host) {
+        for (const [sock, p] of this.sessions) {
+          if (p.id === msg.to) {
+            this.send(sock, { t: 'snapshot', data: msg.data })
+            break
+          }
+        }
       }
     })
 
     const drop = (): void => {
       if (this.sessions.delete(ws)) {
         this.broadcast(null, { t: 'left', id: info.id })
+        if (this.host === ws) {
+          const next = this.sessions.keys().next()
+          this.host = next.done ? null : next.value
+          if (this.host) {
+            const hostId = this.sessions.get(this.host)?.id
+            this.broadcast(null, { t: 'host', id: hostId })
+          }
+        }
       }
     }
     ws.addEventListener('close', drop)

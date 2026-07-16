@@ -121,6 +121,19 @@ const hydrants = props
   .filter((p) => p.name === 'FIRE HYDRANT')
   .map((p) => ({ prop: p, x0: p.body.position.x, z0: p.body.position.z, burst: false }))
 
+function burstHydrant(h: (typeof hydrants)[number], mine: boolean): void {
+  if (h.burst) return
+  h.burst = true
+  waterFX.addJet({ x: h.x0, y: 0.05, z: h.z0, vx: 0, vy: 8.5, vz: 0, spread: 1.4, rate: 45 })
+  waterZones.push({ x: h.x0, z: h.z0, r: 1.3, name: 'HYDRANT GEYSER' })
+  splashSound(1)
+  if (mine) {
+    const s = toScreen(h.prop.body.position)
+    award(60, s.x, s.y, 'GUSHER')
+    showBanner('OPEN HYDRANT SUMMER')
+  }
+}
+
 function updateHydrants(): void {
   for (const h of hydrants) {
     if (h.burst) continue
@@ -129,13 +142,9 @@ function updateHydrants(): void {
     const dx = b.position.x - h.x0
     const dz = b.position.z - h.z0
     if (hydrantUp.y < 0.5 || dx * dx + dz * dz > 2) {
-      h.burst = true
-      waterFX.addJet({ x: h.x0, y: 0.05, z: h.z0, vx: 0, vy: 8.5, vz: 0, spread: 1.4, rate: 45 })
-      waterZones.push({ x: h.x0, z: h.z0, r: 1.3, name: 'HYDRANT GEYSER' })
-      splashSound(1)
-      const s = toScreen(b.position)
-      award(60, s.x, s.y, 'GUSHER')
-      showBanner('OPEN HYDRANT SUMMER')
+      // Tilt is derived from (synced) physics, so every client detects it —
+      // only the player who plausibly caused it gets paid
+      burstHydrant(h, attributedToMe(b.position))
     }
   }
 }
@@ -183,6 +192,7 @@ let myColor = 0
       await net.connect(lobby, myNick, myColor)
       document.getElementById('intro')!.classList.add('hidden')
       playersEl.style.display = 'block'
+      if (!net.isHost) net.requestSnapshot() // pull the host's world state
     } catch {
       statusEl.textContent = 'could not join — check the lobby id and try again'
       joinEl.disabled = false
@@ -264,15 +274,19 @@ function updateRings(dt: number): void {
 // --- Breakable glass ---
 // Panes are physics triggers: anything dynamic touching one queues a shatter.
 // Removal happens outside world.step (removing bodies mid-step is unsafe).
-const paneBreakQueue: Pane[] = []
+// `mine` marks breaks this client caused (scores + is announced to the lobby)
+// vs. breaks replayed from other players (visuals only).
+const paneBreakQueue: Array<{ pane: Pane; mine: boolean }> = []
+
+function queuePaneBreak(pane: Pane, mine: boolean): void {
+  if (pane.broken) return
+  pane.broken = true
+  paneBreakQueue.push({ pane, mine })
+  if (mine) net.sendEvent('pane', panes.indexOf(pane))
+}
 
 for (const pane of panes) {
-  pane.body.addEventListener('collide', () => {
-    if (!pane.broken) {
-      pane.broken = true
-      paneBreakQueue.push(pane)
-    }
-  })
+  pane.body.addEventListener('collide', () => queuePaneBreak(pane, true))
 }
 
 interface Shard {
@@ -319,16 +333,32 @@ function updateShards(dt: number): void {
 }
 
 function processPaneBreaks(): void {
-  for (const pane of paneBreakQueue.splice(0)) {
+  for (const { pane, mine } of paneBreakQueue.splice(0)) {
     world.removeBody(pane.body)
     pane.mesh.removeFromParent()
-    const s = toScreen(pane.body.position)
-    award(30, s.x, s.y, 'WINDOW')
+    if (mine) {
+      const s = toScreen(pane.body.position)
+      award(30, s.x, s.y, 'WINDOW')
+    }
     glassBreak()
     // Use the body position: house panes live inside rotated groups, so the
     // mesh's local position isn't world space.
     spawnShards(new THREE.Vector3(pane.body.position.x, pane.body.position.y, pane.body.position.z))
   }
+}
+
+// --- Score attribution ---
+// In a lobby, prop physics is synced, so every client sees every knock.
+// Only pay out for chaos this player plausibly caused: it happened near
+// their puppy, or right after their bark.
+let lastBarkTime = -10
+function attributedToMe(p: CANNON.Vec3): boolean {
+  if (!net.connected) return true
+  if (worldAge - lastBarkTime < 1.5) return true
+  const dx = p.x - puppy.body.position.x
+  const dy = p.y - puppy.body.position.y
+  const dz = p.z - puppy.body.position.z
+  return dx * dx + dy * dy + dz * dz < 64
 }
 
 // The prop-shoving part of a bark — shared by local and remote barks
@@ -348,6 +378,7 @@ function barkImpulse(o: CANNON.Vec3): void {
 
 function bark(origin: THREE.Vector3): void {
   spawnRing(origin)
+  lastBarkTime = worldAge
   net.sendBark(origin.x, origin.y, origin.z)
   const o = new CANNON.Vec3(origin.x, origin.y + 0.3, origin.z)
   barkImpulse(o)
@@ -355,16 +386,14 @@ function bark(origin: THREE.Vector3): void {
   for (const pane of panes) {
     if (pane.broken) continue
     if (pane.body.position.vsub(o).length() <= BARK_RADIUS) {
-      pane.broken = true
-      paneBreakQueue.push(pane)
+      queuePaneBreak(pane, true)
     }
   }
   // Barking bursts treat bags in range
   for (const state of bagStates) {
     if (state.burst) continue
     if (state.bag.body.position.vsub(o).length() <= BARK_RADIUS) {
-      state.burst = true
-      bagBurstQueue.push(state)
+      queueBagBurst(state, true)
     }
   }
   // Barking scatters cats and mice, and shakes stolen kibble out of raccoons
@@ -510,7 +539,8 @@ function updateProp(prop: Prop, dt: number): void {
     prop.settleTime = 0
     // No points while the freshly spawned world is still settling — props
     // dropping into place at load time are not the puppy's doing (yet).
-    if (worldAge > 2) {
+    // In a lobby, only knocks attributable to this player pay out.
+    if (worldAge > 2 && attributedToMe(b.position)) {
       const s = toScreen(b.position)
       award(prop.points, s.x, s.y, prop.name)
       thud(Math.min(1, speed / 9))
@@ -723,7 +753,14 @@ interface Kibble {
   body: CANNON.Body
 }
 const bagStates: BagState[] = treatBags.map((bag) => ({ bag, burst: false }))
-const bagBurstQueue: BagState[] = []
+const bagBurstQueue: Array<{ state: BagState; mine: boolean }> = []
+
+function queueBagBurst(state: BagState, mine: boolean): void {
+  if (state.burst) return
+  state.burst = true
+  bagBurstQueue.push({ state, mine })
+  if (mine) net.sendEvent('bag', bagStates.indexOf(state))
+}
 const kibbles: Kibble[] = []
 const kibbleGeo = new THREE.SphereGeometry(0.06, 6, 5)
 const kibbleMats = [0xa5692e, 0x8a542a, 0xb87d3a].map(
@@ -735,8 +772,7 @@ for (const state of bagStates) {
   state.bag.body.addEventListener('collide', (e: { contact: CANNON.ContactEquation }) => {
     if (state.burst) return
     if (Math.abs(e.contact.getImpactVelocityAlongNormal()) > 4.5) {
-      state.burst = true
-      bagBurstQueue.push(state)
+      queueBagBurst(state, true)
     }
   })
 }
@@ -757,7 +793,7 @@ function spawnKibble(x: number, y: number, z: number): void {
 }
 
 function processBagBursts(): void {
-  for (const state of bagBurstQueue.splice(0)) {
+  for (const { state, mine } of bagBurstQueue.splice(0)) {
     const p = state.bag.body.position
     world.removeBody(state.bag.body)
     state.bag.mesh.visible = false
@@ -770,8 +806,10 @@ function processBagBursts(): void {
     for (let i = 0; i < 16; i++) spawnKibble(p.x, Math.max(0.5, p.y), p.z)
     thud(1)
     crunch()
-    const s = toScreen(p)
-    award(20, s.x, s.y, 'JACKPOT')
+    if (mine) {
+      const s = toScreen(p)
+      award(20, s.x, s.y, 'JACKPOT')
+    }
   }
 }
 
@@ -828,9 +866,114 @@ function currentClimbable(): ClimbInfo | null {
   return null
 }
 
+// --- Synced physics (host-authoritative) ---
+// The lobby host's simulation is the truth. It streams deltas of awake
+// bodies; other clients keep simulating locally as prediction and apply the
+// host's state on top. Remote players get kinematic ghost bodies in the
+// host's world so their pushes move props for everyone.
+const syncBodies: CANNON.Body[] = [...props.map((p) => p.body), ...dynamicDecor.map((d) => d.body)]
+const r3 = (n: number): number => Math.round(n * 1000) / 1000
+
+function buildEntries(onlyAwake: boolean): number[][] {
+  const out: number[][] = []
+  syncBodies.forEach((b, i) => {
+    if (!b.world) return // removed (e.g. burst treat bag)
+    if (onlyAwake && b.sleepState === CANNON.Body.SLEEPING) return
+    out.push([
+      i,
+      r3(b.position.x),
+      r3(b.position.y),
+      r3(b.position.z),
+      r3(b.quaternion.x),
+      r3(b.quaternion.y),
+      r3(b.quaternion.z),
+      r3(b.quaternion.w),
+      r3(b.velocity.x),
+      r3(b.velocity.y),
+      r3(b.velocity.z),
+    ])
+  })
+  return out
+}
+
+function applyEntries(entries: number[][]): void {
+  for (const e of entries) {
+    const b = syncBodies[e[0]]
+    if (!b || !b.world) continue
+    b.wakeUp()
+    b.position.set(e[1], e[2], e[3])
+    b.quaternion.set(e[4], e[5], e[6], e[7])
+    b.velocity.set(e[8], e[9], e[10])
+  }
+}
+
+net.onDelta = applyEntries
+net.onEvent = (kind, i) => {
+  if (kind === 'pane' && panes[i]) queuePaneBreak(panes[i], false)
+  else if (kind === 'bag' && bagStates[i]) queueBagBurst(bagStates[i], false)
+}
+net.onSnapshotRequest = (from) => {
+  net.sendSnapshot(from, {
+    bodies: buildEntries(false),
+    panes: panes.map((p, i) => (p.broken ? i : -1)).filter((i) => i >= 0),
+    bags: bagStates.map((s, i) => (s.burst ? i : -1)).filter((i) => i >= 0),
+    hyd: hydrants.map((h, i) => (h.burst ? i : -1)).filter((i) => i >= 0),
+  })
+}
+net.onSnapshot = (snap) => {
+  for (const i of snap.panes) if (panes[i]) queuePaneBreak(panes[i], false)
+  for (const i of snap.bags) if (bagStates[i]) queueBagBurst(bagStates[i], false)
+  for (const i of snap.hyd) if (hydrants[i]) burstHydrant(hydrants[i], false)
+  applyEntries(snap.bodies)
+}
+
+// Kinematic ghost puppies (host only): remote players' bodies in OUR sim,
+// so their shoves and nuzzles move props authoritatively.
+const ghostBodies = new Map<string, CANNON.Body>()
+function updateGhosts(): void {
+  if (!net.isHost) {
+    for (const [id, g] of ghostBodies) {
+      world.removeBody(g)
+      ghostBodies.delete(id)
+    }
+    return
+  }
+  for (const [id, rp] of net.remotes) {
+    let g = ghostBodies.get(id)
+    if (!g) {
+      g = new CANNON.Body({
+        mass: 0,
+        type: CANNON.Body.KINEMATIC,
+        shape: new CANNON.Sphere(0.35),
+      })
+      g.collisionFilterGroup = GROUP_DYNAMIC
+      g.allowSleep = false
+      g.position.set(rp.netPos.x, rp.netPos.y, rp.netPos.z)
+      world.addBody(g)
+      ghostBodies.set(id, g)
+    }
+    const dx = rp.netPos.x - g.position.x
+    const dy = rp.netPos.y - g.position.y
+    const dz = rp.netPos.z - g.position.z
+    if (dx * dx + dy * dy + dz * dz > 6) {
+      g.position.set(rp.netPos.x, rp.netPos.y, rp.netPos.z)
+      g.velocity.set(0, 0, 0)
+    } else {
+      g.velocity.set(dx / 0.12, dy / 0.12, dz / 0.12)
+    }
+  }
+  for (const [id, g] of ghostBodies) {
+    if (!net.remotes.has(id)) {
+      world.removeBody(g)
+      ghostBodies.delete(id)
+    }
+  }
+}
+
 // --- Main loop ---
 let lastTime = performance.now()
 let worldAge = 0
+let deltaAcc = 0
 
 // Let the physics settle before the first frame so props start at rest
 // instead of visibly dropping into place at spawn.
@@ -938,6 +1081,12 @@ function frame(now: number): void {
 
   // Multiplayer: interpolate remote puppies, position nameplates, send state
   if (net.connected || net.remotes.size > 0) {
+    updateGhosts()
+    deltaAcc += dt
+    if (net.isHost && deltaAcc >= 0.1) {
+      deltaAcc = 0
+      net.sendDelta(buildEntries(true))
+    }
     for (const rp of net.remotes.values()) {
       rp.update(dt)
       const g = rp.parts.group

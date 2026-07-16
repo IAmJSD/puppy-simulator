@@ -50,11 +50,17 @@ export class RemotePlayer {
     hud.appendChild(this.nameEl)
   }
 
+  /** Latest network position — drives the host's kinematic ghost body. */
+  get netPos(): THREE.Vector3 {
+    return this.target
+  }
+
   applyState(msg: StateMsg): void {
     const prev = this.target.clone()
     this.target.set(msg.p[0], msg.p[1], msg.p[2])
     if (!this.parts.group.visible) {
-      this.parts.group.position.copy(this.target)
+      this.cur.copy(this.target)
+      this.parts.group.position.set(this.target.x, this.target.y - 0.35, this.target.z)
       this.parts.group.visible = true
     }
     this.speed = prev.distanceTo(this.target) / SEND_INTERVAL
@@ -63,10 +69,14 @@ export class RemotePlayer {
     this.score = msg.sc ?? 0
   }
 
+  private cur = new THREE.Vector3()
+
   update(dt: number): void {
     const g = this.parts.group
     if (!g.visible) return
-    g.position.lerp(this.target, 1 - Math.exp(-12 * dt))
+    this.cur.lerp(this.target, 1 - Math.exp(-12 * dt))
+    // Wire positions are the physics body CENTER; the mesh origin is at the feet
+    g.position.set(this.cur.x, this.cur.y - 0.35, this.cur.z)
     let diff = this.targetFacing - this.facing
     while (diff > Math.PI) diff -= Math.PI * 2
     while (diff < -Math.PI) diff += Math.PI * 2
@@ -101,15 +111,36 @@ export class RemotePlayer {
   }
 }
 
+export type WorldEventKind = 'pane' | 'bag'
+
+/** One synced body: [index, x, y, z, qx, qy, qz, qw, vx, vy, vz] */
+export type BodyEntry = number[]
+
+export interface Snapshot {
+  bodies: BodyEntry[]
+  panes: number[]
+  bags: number[]
+  hyd: number[]
+}
+
 export class Net {
   readonly remotes = new Map<string, RemotePlayer>()
   myId = ''
+  hostId = ''
   onBark: ((x: number, y: number, z: number) => void) | null = null
+  onDelta: ((entries: BodyEntry[]) => void) | null = null
+  onEvent: ((kind: WorldEventKind, index: number) => void) | null = null
+  onSnapshotRequest: ((from: string) => void) | null = null
+  onSnapshot: ((snap: Snapshot) => void) | null = null
 
   private ws: WebSocket | null = null
   private scene: THREE.Scene
   private hud: HTMLElement
   private sendAcc = 0
+
+  get isHost(): boolean {
+    return this.connected && this.myId === this.hostId
+  }
 
   constructor(scene: THREE.Scene, hud: HTMLElement) {
     this.scene = scene
@@ -144,6 +175,7 @@ export class Net {
         if (msg.t === 'welcome') {
           this.ws = ws
           this.myId = String(msg.id)
+          this.hostId = String(msg.host ?? msg.id)
           ws.removeEventListener('error', fail)
           for (const p of msg.players as Array<{ id: string; nick: string; color: number; last: StateMsg | null }>) {
             const rp = new RemotePlayer(this.scene, this.hud, p.id, p.nick, p.color)
@@ -170,6 +202,20 @@ export class Net {
         } else if (msg.t === 'bark') {
           const p = msg.p as [number, number, number]
           if (this.onBark && Array.isArray(p)) this.onBark(p[0], p[1], p[2])
+        } else if (msg.t === 'host') {
+          this.hostId = String(msg.id)
+        } else if (msg.t === 'delta') {
+          if (!this.isHost && this.onDelta && Array.isArray(msg.b)) {
+            this.onDelta(msg.b as BodyEntry[])
+          }
+        } else if (msg.t === 'ev') {
+          if (this.onEvent && (msg.k === 'pane' || msg.k === 'bag')) {
+            this.onEvent(msg.k, Number(msg.i))
+          }
+        } else if (msg.t === 'reqsnap') {
+          if (this.isHost && this.onSnapshotRequest) this.onSnapshotRequest(String(msg.from))
+        } else if (msg.t === 'snapshot') {
+          if (!this.isHost && this.onSnapshot) this.onSnapshot(msg.data as Snapshot)
         }
       })
       ws.addEventListener('close', () => {
@@ -210,5 +256,25 @@ export class Net {
   sendBark(x: number, y: number, z: number): void {
     if (!this.connected) return
     this.ws!.send(JSON.stringify({ t: 'bark', p: [x, y, z] }))
+  }
+
+  sendDelta(entries: BodyEntry[]): void {
+    if (!this.connected || entries.length === 0) return
+    this.ws!.send(JSON.stringify({ t: 'delta', b: entries }))
+  }
+
+  sendEvent(kind: WorldEventKind, index: number): void {
+    if (!this.connected) return
+    this.ws!.send(JSON.stringify({ t: 'ev', k: kind, i: index }))
+  }
+
+  requestSnapshot(): void {
+    if (!this.connected) return
+    this.ws!.send(JSON.stringify({ t: 'reqsnap' }))
+  }
+
+  sendSnapshot(to: string, data: Snapshot): void {
+    if (!this.connected) return
+    this.ws!.send(JSON.stringify({ t: 'snapshot', to, data }))
   }
 }
