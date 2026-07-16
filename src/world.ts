@@ -730,10 +730,11 @@ function addSwingDoor(
   w: number,
   h: number,
   color: number,
+  baseY = 0, // bottom of the doorway (e.g. porch height for the mansion)
 ): void {
-  // Hung slightly off the ground: a door resting ON the ground plane drags
-  // with friction and swings badly.
-  const hangY = h / 2 + 0.04
+  // Hung slightly off the floor: a door resting ON the floor drags with
+  // friction and swings badly.
+  const hangY = baseY + h / 2 + 0.04
   const anchor = new CANNON.Body({ mass: 0 })
   anchor.position.set(hingeX, hangY, hingeZ)
   world.addBody(anchor)
@@ -1838,8 +1839,11 @@ function setupMansion(
     add('FANCY VASE', 60, vase.mesh, vase.body, -2, 4.6, CZ + 1.5)
   }
 
+  // Threshold under the doorway at porch height: the porch floor is 0.6m
+  // tall, and a full-height door would slam into it when swinging outward.
+  wallPiece(2.0, 0.6, T, 0, 0.3, front)
   // Front door on a hinge — nuzzle it open (opening spans x -1..1)
-  addSwingDoor(scene, world, decor, doors, -1, front, 0, 1.9, 2.7, 0x4a2e1c)
+  addSwingDoor(scene, world, decor, doors, -1, front, 0, 1.9, 2.1, 0x4a2e1c, 0.6)
 
   // A couch in the parlour and a four-legged-friend-sized bed upstairs;
   // both are snuggle spots that stay snuggleable wherever they get shoved.
