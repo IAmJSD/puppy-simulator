@@ -10,8 +10,9 @@ import {
 } from './world'
 import { Puppy, type ClimbInfo } from './puppy'
 import { initInput, consumeMouse, onFirstInput, isDown } from './input'
-import { award, tickScore, sleepPopup, showBanner } from './score'
-import { thud, glassBreak, sigh, splashSound, crunch } from './audio'
+import { award, tickScore, sleepPopup, heartPopup, showBanner } from './score'
+import { thud, glassBreak, sigh, splashSound, crunch, happyWhine } from './audio'
+import { createHumans } from './human'
 import { WaterFX } from './water'
 import { createCapybaras, type Capybara } from './capybara'
 
@@ -67,6 +68,18 @@ for (const capy of capybaras) {
 }
 const unbotheredCooldowns = new Map<number, number>()
 let ridingCapy: Capybara | null = null
+
+// Humans who pet the dog. The entire point of everything.
+const humans = createHumans(scene, world, [
+  [0, 24, 5], // plaza strollers
+  [-8, 34, 4.5],
+  [-30, 17, 8], // sidewalk walkers
+  [30, 13, 8],
+  [-34, 30, 5], // playground parent
+  [30, 40, 5], // water park lifeguard (self-appointed)
+  [-58, 90, 6], // pond capybara-watcher
+])
+let shownPetBanner = false
 
 // Fire hydrants erupt into geysers when knocked over
 const UP = new CANNON.Vec3(0, 1, 0)
@@ -719,6 +732,25 @@ function frame(now: number): void {
   for (const capy of capybaras) {
     capy.update(dt, puppy.body.position, capy === ridingCapy && puppy.snuggling)
   }
+  let beingPetted = false
+  for (const human of humans) {
+    const ev = human.update(dt, puppy.body.position)
+    if (ev.petting) beingPetted = true
+    if (ev.petStarted) {
+      happyWhine()
+      const s = toScreen(puppy.body.position)
+      award(30, s.x, s.y, 'PETS')
+      if (!shownPetBanner) {
+        shownPetBanner = true
+        showBanner('MAXIMUM GOOD DOG')
+      }
+    }
+    if (ev.heartPulse) {
+      const s = toScreen(puppy.body.position)
+      heartPopup(s.x, s.y - 40)
+    }
+  }
+  puppy.delighted = beingPetted
   // Carry the snoozing passenger along on the capybara's back
   if (ridingCapy && puppy.snuggling) {
     const rb = ridingCapy.body

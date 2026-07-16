@@ -79,6 +79,17 @@ function checkMilestones(): void {
   }
 }
 
+/** A floating heart — being petted is a big deal. */
+export function heartPopup(x: number, y: number): void {
+  const el = document.createElement('div')
+  el.className = 'popup popup-heart'
+  el.textContent = '♥'
+  el.style.left = `${x + (Math.random() - 0.5) * 50}px`
+  el.style.top = `${y}px`
+  hudEl.appendChild(el)
+  setTimeout(() => el.remove(), 1700)
+}
+
 /** Soft drifting "Zzz" above a snoozing puppy. */
 export function sleepPopup(x: number, y: number): void {
   const el = document.createElement('div')

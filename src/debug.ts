@@ -3,6 +3,7 @@
 import * as THREE from 'three'
 import { createWorld } from './world'
 import { createCapybaras } from './capybara'
+import { createHumans } from './human'
 
 const q = new URLSearchParams(location.search)
 const n = (k: string, d: number): number => {
@@ -27,6 +28,15 @@ createCapybaras(scene, world, [
   [-69, 99, 7],
   [-76, 96, 7],
   [38.5, 31.5, 0],
+])
+createHumans(scene, world, [
+  [0, 24, 5],
+  [-8, 34, 4.5],
+  [-30, 17, 8],
+  [30, 13, 8],
+  [-34, 30, 5],
+  [30, 40, 5],
+  [-58, 90, 6],
 ])
 for (let i = 0; i < 120; i++) world.step(1 / 60)
 for (const p of [...props, ...dynamicDecor]) {

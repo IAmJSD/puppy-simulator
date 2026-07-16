@@ -86,6 +86,24 @@ export function jumpYip(): void {
   yip(audio().currentTime, 700)
 }
 
+/** Happy rising whine — the sound of a dog receiving pets. */
+export function happyWhine(): void {
+  const ac = audio()
+  const t = ac.currentTime
+  const osc = ac.createOscillator()
+  const gain = ac.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(480, t)
+  osc.frequency.exponentialRampToValueAtTime(950, t + 0.28)
+  osc.frequency.exponentialRampToValueAtTime(780, t + 0.4)
+  gain.gain.setValueAtTime(0.0001, t)
+  gain.gain.exponentialRampToValueAtTime(0.09, t + 0.05)
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.45)
+  osc.connect(gain).connect(ac.destination)
+  osc.start(t)
+  osc.stop(t + 0.5)
+}
+
 /** Crunchy kibble bite: two quick filtered noise snaps. */
 export function crunch(): void {
   const ac = audio()

@@ -60,6 +60,7 @@ export class Puppy {
   inWater = false // set by main; wading slows the puppy down
   climbing = false
   sliding = false
+  delighted = false // being petted — maximum tail output
 
   setSnuggling(on: boolean): void {
     if (on && !this.snuggling) this.snuggleTime = 0
@@ -365,7 +366,7 @@ export class Puppy {
     this.mesh.rotation.x = 0
     this.mesh.scale.set(1, 1, 1)
 
-    this.wagPhase += dt * (this.zoomies ? 22 : 7 + speed)
+    this.wagPhase += dt * (this.delighted ? 26 : this.zoomies ? 22 : 7 + speed)
     this.gaitPhase += dt * (6 + speed * 1.6)
     this.flopPhase += dt * (4 + speed * 2)
 
