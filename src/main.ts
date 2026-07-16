@@ -385,9 +385,13 @@ function updateProp(prop: Prop, dt: number): void {
   if (!prop.scored && speed > KNOCK_SPEED) {
     prop.scored = true
     prop.settleTime = 0
-    const s = toScreen(b.position)
-    award(prop.points, s.x, s.y, prop.name)
-    thud(Math.min(1, speed / 9))
+    // No points while the freshly spawned world is still settling — props
+    // dropping into place at load time are not the puppy's doing (yet).
+    if (worldAge > 2) {
+      const s = toScreen(b.position)
+      award(prop.points, s.x, s.y, prop.name)
+      thud(Math.min(1, speed / 9))
+    }
   } else if (prop.scored) {
     if (speed < 0.4) {
       prop.settleTime += dt
@@ -691,12 +695,20 @@ function currentClimbable(): ClimbInfo | null {
 
 // --- Main loop ---
 let lastTime = performance.now()
+let worldAge = 0
+
+// Let the physics settle before the first frame so props start at rest
+// instead of visibly dropping into place at spawn.
+for (let i = 0; i < 60; i++) world.step(1 / 60)
+paneBreakQueue.length = 0
+bagBurstQueue.length = 0
 
 function frame(now: number): void {
   requestAnimationFrame(frame)
   const dt = Math.min(0.05, (now - lastTime) / 1000)
   lastTime = now
   if (dt <= 0) return
+  worldAge += dt
 
   // Camera input
   const m = consumeMouse()
