@@ -69,6 +69,11 @@ export interface DynamicDecor {
   body: CANNON.Body
 }
 
+export interface SwingDoor {
+  body: CANNON.Body
+  restYaw: number // closed orientation; a soft spring returns the door here
+}
+
 export interface GameWorld {
   scene: THREE.Scene
   world: CANNON.World
@@ -80,6 +85,7 @@ export interface GameWorld {
   waterJets: WaterJet[]
   dynamicDecor: DynamicDecor[]
   treatBags: DynamicDecor[]
+  doors: SwingDoor[]
   puppyMaterial: CANNON.Material
 }
 
@@ -119,6 +125,7 @@ export function createWorld(): GameWorld {
   const waterZones: WaterZone[] = []
   const waterJets: WaterJet[] = []
   const dynamicDecor: DynamicDecor[] = []
+  const doors: SwingDoor[] = []
   const climbables: Climbable[] = []
   const snuggleSpots: SnuggleSpot[] = [
     { x: 17, y: 0.35, z: -16, r: 0.85, name: 'KENNEL' },
@@ -161,8 +168,8 @@ export function createWorld(): GameWorld {
     props.push({ name, points, mesh, body, scored: false, settleTime: 0 })
   }
 
-  setupMansion(scene, world, add, panes, dynamicDecor, snuggleSpots)
-  setupNeighbourhood(scene, world, add, panes, dynamicDecor, snuggleSpots)
+  setupMansion(scene, world, add, panes, dynamicDecor, doors, snuggleSpots)
+  setupNeighbourhood(scene, world, add, panes, dynamicDecor, doors, snuggleSpots)
 
   // Pond ducks + soccer balls for the new south side
   for (const [x, z] of [
@@ -347,6 +354,7 @@ export function createWorld(): GameWorld {
     waterJets,
     dynamicDecor,
     treatBags,
+    doors,
     puppyMaterial,
   }
 }
@@ -715,6 +723,7 @@ function addSwingDoor(
   scene: THREE.Scene,
   world: CANNON.World,
   decor: DynamicDecor[],
+  doors: SwingDoor[],
   hingeX: number,
   hingeZ: number,
   rotY: number,
@@ -722,8 +731,11 @@ function addSwingDoor(
   h: number,
   color: number,
 ): void {
+  // Hung slightly off the ground: a door resting ON the ground plane drags
+  // with friction and swings badly.
+  const hangY = h / 2 + 0.04
   const anchor = new CANNON.Body({ mass: 0 })
-  anchor.position.set(hingeX, h / 2, hingeZ)
+  anchor.position.set(hingeX, hangY, hingeZ)
   world.addBody(anchor)
 
   const cos = Math.cos(rotY)
@@ -733,7 +745,7 @@ function addSwingDoor(
     shape: new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, 0.04)),
   })
   door.collisionFilterGroup = GROUP_DYNAMIC
-  door.position.set(hingeX + (w / 2) * cos, h / 2, hingeZ - (w / 2) * sin)
+  door.position.set(hingeX + (w / 2) * cos, hangY, hingeZ - (w / 2) * sin)
   door.quaternion.setFromEuler(0, rotY, 0)
   door.angularDamping = 0.6
   door.linearDamping = 0.3
@@ -762,6 +774,7 @@ function addSwingDoor(
   }
   scene.add(g)
   decor.push({ mesh: g, body: door })
+  doors.push({ body: door, restYaw: rotY })
 }
 
 const ART_PALETTE = [0xd7263d, 0xf2b134, 0x3a6ea5, 0x5d9c45, 0xb086e0, 0xe8762c, 0x2b2b31]
@@ -957,6 +970,7 @@ function setupNeighbourhood(
   add: AddProp,
   panes: Pane[],
   decor: DynamicDecor[],
+  doors: SwingDoor[],
   snuggleSpots: SnuggleSpot[],
 ): void {
   const g = new THREE.Group()
@@ -1138,7 +1152,7 @@ function setupNeighbourhood(
 
     // Hinged front door (opening local x -0.8..0.8 at lz 2.85)
     const hinge = worldOf(-0.8, 2.85)
-    addSwingDoor(scene, world, decor, hinge.x, hinge.z, rot, 1.5, 2.12, 0x6e4a2e)
+    addSwingDoor(scene, world, decor, doors, hinge.x, hinge.z, rot, 1.5, 2.12, 0x6e4a2e)
 
     // Knickknack + a bed or couch (which doubles as a snuggle spot)
     const spotA = worldOf(1.6, -1)
@@ -1548,6 +1562,7 @@ function setupMansion(
   add: AddProp,
   panes: Pane[],
   decor: DynamicDecor[],
+  doors: SwingDoor[],
   snuggleSpots: SnuggleSpot[],
 ): void {
   const m = new THREE.Group()
@@ -1824,7 +1839,7 @@ function setupMansion(
   }
 
   // Front door on a hinge — nuzzle it open (opening spans x -1..1)
-  addSwingDoor(scene, world, decor, -1, front, 0, 1.9, 2.7, 0x4a2e1c)
+  addSwingDoor(scene, world, decor, doors, -1, front, 0, 1.9, 2.7, 0x4a2e1c)
 
   // A couch in the parlour and a four-legged-friend-sized bed upstairs;
   // both are snuggle spots that stay snuggleable wherever they get shoved.

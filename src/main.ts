@@ -48,6 +48,7 @@ const {
   waterJets,
   dynamicDecor,
   treatBags,
+  doors,
   puppyMaterial,
 } = createWorld()
 const waterFX = new WaterFX(scene, waterJets)
@@ -645,6 +646,22 @@ function updateKibble(): void {
   }
 }
 
+// --- Swing doors: soft return spring toward closed ---
+// Doors swing freely both ways; this eases them shut again afterwards.
+function updateDoors(dt: number): void {
+  for (const d of doors) {
+    const q = d.body.quaternion
+    const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.z * q.z))
+    let diff = yaw - d.restYaw
+    while (diff > Math.PI) diff -= Math.PI * 2
+    while (diff < -Math.PI) diff += Math.PI * 2
+    if (Math.abs(diff) > 0.04) {
+      d.body.wakeUp()
+      d.body.angularVelocity.y -= diff * 4.5 * dt
+    }
+  }
+}
+
 // --- Tree climbing ---
 function currentClimbable(): ClimbInfo | null {
   const p = puppy.body.position
@@ -712,6 +729,7 @@ function frame(now: number): void {
   updateHydrants()
   processBagBursts()
   updateKibble()
+  updateDoors(dt)
   for (const [i, t] of unbotheredCooldowns) {
     if (t > dt) unbotheredCooldowns.set(i, t - dt)
     else unbotheredCooldowns.delete(i)

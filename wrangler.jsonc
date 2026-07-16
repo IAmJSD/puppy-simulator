@@ -1,5 +1,6 @@
 {
   "name": "puppy-simulator",
+  "account_id": "ac2dd89af834dd17d7f5cf5df3789f08",
   "compatibility_date": "2025-01-01",
   "assets": {
     "directory": "./dist"
