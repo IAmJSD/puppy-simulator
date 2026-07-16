@@ -1625,8 +1625,9 @@ function setupWaterPark(
 
   // --- Mega slide with its own plunge pool ---
   buildSlide(scene, world, 52, 22, 5.5, 10, 0xf2789f)
-  const plungeDeck = new THREE.Mesh(new THREE.BoxGeometry(13, 0.05, 10), lambert(0xd8d2c5))
-  plungeDeck.position.set(66.5, 0.025, 22)
+  // Raised slightly above the sidewalk it meets — coplanar tops z-fight
+  const plungeDeck = new THREE.Mesh(new THREE.BoxGeometry(13, 0.09, 10), lambert(0xd8d2c5))
+  plungeDeck.position.set(66.5, 0.045, 22)
   plungeDeck.receiveShadow = true
   scene.add(plungeDeck)
   const plungeBottom = new THREE.Mesh(new THREE.BoxGeometry(9, 0.05, 6), lambert(0x2e7cab))
