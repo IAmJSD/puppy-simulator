@@ -22,6 +22,7 @@ import {
   squeak,
   chitter,
   boing,
+  snuffle,
   bark as barkSound,
 } from './audio'
 import { Net } from './net'
@@ -116,9 +117,13 @@ const critters = createCritters(scene, world, [
   ['bunny', 52, 88, 6],
   ['bunny', 25, -8, 6],
   ['bunny', -70, 22, 5],
+  ['hedgehog', -30, 70, 4],
+  ['hedgehog', 38, 44, 4],
+  ['hedgehog', -8, 12, 4],
+  ['hedgehog', 68, 8, 4],
 ])
 const lootCooldowns = new Map<number, number>()
-const critterBanners = { cat: false, mouse: false, raccoon: false, bunny: false }
+const critterBanners = { cat: false, mouse: false, raccoon: false, bunny: false, hedgehog: false }
 
 // Fire hydrants erupt into geysers when knocked over
 const UP = new CANNON.Vec3(0, 1, 0)
@@ -1030,6 +1035,13 @@ function updateMyNpcInteractions(dt: number): void {
       if (!critterBanners.bunny) {
         critterBanners.bunny = true
         showBanner('SOMEBUNNY SPECIAL')
+      }
+    } else if (c.kind === 'hedgehog') {
+      snuffle()
+      award(30, s.x, s.y, 'PRICKLY PAL')
+      if (!critterBanners.hedgehog) {
+        critterBanners.hedgehog = true
+        showBanner('ON THE HEDGE OF GLORY')
       }
     }
     // The flee must happen where the AI runs

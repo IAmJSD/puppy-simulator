@@ -104,6 +104,31 @@ export function boing(): void {
   osc.stop(t + 0.25)
 }
 
+/** Hedgehog snuffle: a few soft nosy noise puffs. */
+export function snuffle(): void {
+  const ac = audio()
+  for (const offset of [0, 0.11, 0.2]) {
+    const t = ac.currentTime + offset
+    const dur = 0.08
+    const buffer = ac.createBuffer(1, Math.floor(ac.sampleRate * dur), ac.sampleRate)
+    const data = buffer.getChannelData(0)
+    for (let i = 0; i < data.length; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / data.length)
+    }
+    const src = ac.createBufferSource()
+    src.buffer = buffer
+    const bp = ac.createBiquadFilter()
+    bp.type = 'bandpass'
+    bp.frequency.value = 650 + offset * 900
+    bp.Q.value = 1.4
+    const gain = ac.createGain()
+    gain.gain.setValueAtTime(0.11, t)
+    gain.gain.exponentialRampToValueAtTime(0.01, t + dur)
+    src.connect(bp).connect(gain).connect(ac.destination)
+    src.start(t)
+  }
+}
+
 /** Cat hiss: a sharp burst of high-passed noise. */
 export function hiss(): void {
   const ac = audio()

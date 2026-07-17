@@ -6,7 +6,7 @@ import * as THREE from 'three'
 import * as CANNON from 'cannon-es'
 import { GROUP_DYNAMIC } from './world'
 
-export type CritterKind = 'cat' | 'mouse' | 'raccoon' | 'bunny'
+export type CritterKind = 'cat' | 'mouse' | 'raccoon' | 'bunny' | 'hedgehog'
 
 interface SpeciesCfg {
   walkSpeed: number
@@ -64,6 +64,17 @@ const SPECIES: Record<CritterKind, SpeciesCfg> = {
     idleMin: 0.8,
     idleMax: 3.5,
     gaitRate: 11,
+  },
+  hedgehog: {
+    walkSpeed: 0.7, // trundles
+    fleeSpeed: 2.2, // can't really sprint
+    fleeRange: 1.6,
+    touchRange: 0.55,
+    bodyY: 0.12,
+    half: [0.09, 0.12, 0.13],
+    idleMin: 1.5,
+    idleMax: 5,
+    gaitRate: 16,
   },
 }
 
@@ -277,6 +288,72 @@ function buildBunny(seed: number): BuiltMesh {
   }
 }
 
+function buildHedgehog(): BuiltMesh {
+  const spineBrown = lam(0x5a4632)
+  const face = lam(0xc9a87a)
+  const g = new THREE.Group()
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.12, 0.24), face)
+  body.position.y = 0.1
+  body.castShadow = true
+  g.add(body)
+  // Spiny coat: a brown mantle draped over the back, bristling with cones
+  const spikes = new THREE.Group()
+  spikes.position.y = 0.14
+  g.add(spikes)
+  const mantle = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.09, 0.26), spineBrown)
+  mantle.position.y = 0.01
+  mantle.castShadow = true
+  spikes.add(mantle)
+  const spikeGeo = new THREE.ConeGeometry(0.028, 0.11, 4)
+  for (let row = 0; row < 4; row++) {
+    for (let col = 0; col < 5; col++) {
+      const spike = new THREE.Mesh(spikeGeo, spineBrown)
+      const side = (col - 2) / 2
+      spike.position.set(side * 0.09, 0.05 - Math.abs(side) * 0.045, 0.09 - row * 0.06)
+      spike.rotation.set(-0.35 + row * 0.2, 0, side * -0.9)
+      spike.castShadow = true
+      spikes.add(spike)
+    }
+  }
+  const snout = new THREE.Group() // tucks under when curling up
+  snout.position.set(0, 0.11, 0.13)
+  g.add(snout)
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.09, 0.1), face)
+  head.position.set(0, 0.01, 0.05)
+  head.castShadow = true
+  snout.add(head)
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.04), lam(0x3a2e26))
+  nose.position.set(0, -0.005, 0.11)
+  snout.add(nose)
+  for (const side of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.012, 8), spineBrown)
+    ear.rotation.x = Math.PI / 2
+    ear.position.set(0.045 * side, 0.06, 0.02)
+    snout.add(ear)
+    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.045, 0.06), spineBrown)
+    foot.position.set(0.055 * side, 0.025, 0.06)
+    g.add(foot)
+    const backFoot = foot.clone()
+    backFoot.position.z = -0.08
+    g.add(backFoot)
+  }
+
+  let tuck = 0
+  return {
+    mesh: g,
+    animate: (gait, speed, alert) => {
+      // Trundle: a quick tiny bob, feet too short to see moving
+      body.position.y = 0.11 + (speed > 0.01 ? Math.abs(Math.sin(gait)) * 0.015 : 0)
+      // Curl up: the snout tucks under and the spines puff out
+      tuck += ((alert ? 1 : 0) - tuck) * 0.1
+      snout.rotation.x = tuck * 1.2
+      snout.position.z = 0.13 - tuck * 0.08
+      const puff = 1 + tuck * 0.2
+      spikes.scale.set(puff, puff, puff)
+    },
+  }
+}
+
 export interface CritterEvents {
   touched: boolean
   fleeStarted: boolean
@@ -320,7 +397,9 @@ export class Critter {
           ? buildMouse(seed)
           : kind === 'bunny'
             ? buildBunny(seed)
-            : buildRaccoon()
+            : kind === 'hedgehog'
+              ? buildHedgehog()
+              : buildRaccoon()
     this.mesh = built.mesh
     this.animateFn = built.animate
     this.homeX = x
