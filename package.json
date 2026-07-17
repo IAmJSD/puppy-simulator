@@ -6,8 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview",
-    "deploy": "npm run build && wrangler deploy"
+    "preview": "vite preview"
   },
   "dependencies": {
     "cannon-es": "^0.20.0",
