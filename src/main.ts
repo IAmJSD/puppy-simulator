@@ -21,6 +21,7 @@ import {
   hiss,
   squeak,
   chitter,
+  boing,
   bark as barkSound,
 } from './audio'
 import { Net } from './net'
@@ -110,9 +111,14 @@ const critters = createCritters(scene, world, [
   ['raccoon', -16.5, -12.5, 6],
   ['raccoon', -78, 88, 6],
   ['raccoon', 60, 74, 6],
+  ['bunny', -20, 50, 6],
+  ['bunny', -52, 102, 6],
+  ['bunny', 52, 88, 6],
+  ['bunny', 25, -8, 6],
+  ['bunny', -70, 22, 5],
 ])
 const lootCooldowns = new Map<number, number>()
-const critterBanners = { cat: false, mouse: false, raccoon: false }
+const critterBanners = { cat: false, mouse: false, raccoon: false, bunny: false }
 
 // Fire hydrants erupt into geysers when knocked over
 const UP = new CANNON.Vec3(0, 1, 0)
@@ -1017,6 +1023,13 @@ function updateMyNpcInteractions(dt: number): void {
       if (!critterBanners.mouse) {
         critterBanners.mouse = true
         showBanner('MICE TO MEET YOU')
+      }
+    } else if (c.kind === 'bunny') {
+      boing()
+      award(30, s.x, s.y, 'BUNNY BOOP')
+      if (!critterBanners.bunny) {
+        critterBanners.bunny = true
+        showBanner('SOMEBUNNY SPECIAL')
       }
     }
     // The flee must happen where the AI runs

@@ -44,6 +44,7 @@ createCritters(scene, world, [
   ['cat', 12, 21, 8],
   ['mouse', 6, 27, 4],
   ['raccoon', -16.5, -12.5, 6],
+  ['bunny', 8, 33, 0],
 ])
 if (q.get('noglass') === '1') {
   scene.traverse((o) => {

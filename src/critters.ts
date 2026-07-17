@@ -6,7 +6,7 @@ import * as THREE from 'three'
 import * as CANNON from 'cannon-es'
 import { GROUP_DYNAMIC } from './world'
 
-export type CritterKind = 'cat' | 'mouse' | 'raccoon'
+export type CritterKind = 'cat' | 'mouse' | 'raccoon' | 'bunny'
 
 interface SpeciesCfg {
   walkSpeed: number
@@ -53,6 +53,17 @@ const SPECIES: Record<CritterKind, SpeciesCfg> = {
     idleMin: 2,
     idleMax: 6,
     gaitRate: 7,
+  },
+  bunny: {
+    walkSpeed: 2.2, // moves in hoppy bursts
+    fleeSpeed: 5.5,
+    fleeRange: 2.8,
+    touchRange: 0.6,
+    bodyY: 0.18,
+    half: [0.11, 0.16, 0.16],
+    idleMin: 0.8,
+    idleMax: 3.5,
+    gaitRate: 11,
   },
 }
 
@@ -215,6 +226,57 @@ function buildRaccoon(): BuiltMesh {
   }
 }
 
+function buildBunny(seed: number): BuiltMesh {
+  const colors = [0xf5f0e6, 0xb8a08a, 0x9a9a9a]
+  const fur = lam(colors[seed % colors.length])
+  const g = new THREE.Group()
+  const hopper = new THREE.Group() // bounces as a unit for the hop
+  g.add(hopper)
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.3), fur)
+  body.position.y = 0.16
+  body.castShadow = true
+  hopper.add(body)
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.15, 0.15), fur)
+  head.position.set(0, 0.31, 0.15)
+  head.castShadow = true
+  hopper.add(head)
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.025, 0.02), lam(0xe8a0a0))
+  nose.position.set(0, 0.29, 0.23)
+  hopper.add(nose)
+  const ears: THREE.Mesh[] = []
+  for (const side of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.24, 0.035), fur)
+    ear.geometry.translate(0, 0.12, 0) // pivot at the base
+    ear.position.set(0.05 * side, 0.38, 0.1)
+    ear.rotation.z = 0.12 * side
+    ear.castShadow = true
+    hopper.add(ear)
+    ears.push(ear)
+  }
+  const tail = new THREE.Mesh(new THREE.SphereGeometry(0.055, 6, 6), lam(0xffffff))
+  tail.position.set(0, 0.16, -0.17)
+  hopper.add(tail)
+  for (const side of [-1, 1]) {
+    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.05, 0.16), fur)
+    foot.position.set(0.07 * side, 0.03, 0.02)
+    hopper.add(foot)
+  }
+
+  return {
+    mesh: g,
+    animate: (gait, speed, alert) => {
+      // The hop: the whole bunny bounces while moving
+      const hop = speed > 0.01 ? Math.abs(Math.sin(gait)) * 0.16 : 0
+      hopper.position.y = hop
+      hopper.rotation.x = speed > 0.01 ? -Math.sin(gait * 2) * 0.08 : 0
+      // Ears: straight up when alert, laid back slightly mid-hop
+      const earBack = alert ? -0.05 : hop * 1.1
+      ears[0].rotation.x = earBack
+      ears[1].rotation.x = earBack
+    },
+  }
+}
+
 export interface CritterEvents {
   touched: boolean
   fleeStarted: boolean
@@ -251,7 +313,14 @@ export class Critter {
   ) {
     this.kind = kind
     this.cfg = SPECIES[kind]
-    const built = kind === 'cat' ? buildCat(seed) : kind === 'mouse' ? buildMouse(seed) : buildRaccoon()
+    const built =
+      kind === 'cat'
+        ? buildCat(seed)
+        : kind === 'mouse'
+          ? buildMouse(seed)
+          : kind === 'bunny'
+            ? buildBunny(seed)
+            : buildRaccoon()
     this.mesh = built.mesh
     this.animateFn = built.animate
     this.homeX = x

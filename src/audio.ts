@@ -86,6 +86,24 @@ export function jumpYip(): void {
   yip(audio().currentTime, 700)
 }
 
+/** Cartoonish boing for booping a bunny mid-hop. */
+export function boing(): void {
+  const ac = audio()
+  const t = ac.currentTime
+  const osc = ac.createOscillator()
+  const gain = ac.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(280, t)
+  osc.frequency.exponentialRampToValueAtTime(640, t + 0.07)
+  osc.frequency.exponentialRampToValueAtTime(330, t + 0.2)
+  gain.gain.setValueAtTime(0.0001, t)
+  gain.gain.exponentialRampToValueAtTime(0.1, t + 0.015)
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.24)
+  osc.connect(gain).connect(ac.destination)
+  osc.start(t)
+  osc.stop(t + 0.25)
+}
+
 /** Cat hiss: a sharp burst of high-passed noise. */
 export function hiss(): void {
   const ac = audio()
